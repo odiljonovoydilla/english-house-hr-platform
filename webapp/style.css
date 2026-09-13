@@ -508,6 +508,72 @@ textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 
 .growth-banner.growth-down { background: var(--red-tint); color: var(--red); }
 .growth-icon { font-size: 20px; }
 
+/* ---------- Kompaniya: Tasdiqlash kutilmoqda paneli ---------- */
+.cm-approvals-card {
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-lg);
+  padding: 20px 20px 6px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.cm-approvals-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.cm-approvals-icon {
+  width: 40px; height: 40px; border-radius: var(--r-md);
+  background: var(--tint);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 19px; flex-shrink: 0;
+}
+.cm-approvals-title { font-size: 15px; font-weight: 800; }
+.cm-approvals-sub { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+
+.cm-approval-group { margin-bottom: 16px; }
+.cm-approval-group:last-child { margin-bottom: 6px; }
+.cm-approval-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--divider);
+}
+.cm-approval-count {
+  display: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--orange-tint);
+  color: var(--orange);
+  font-size: 11px;
+  font-weight: 800;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 20px;
+}
+.cm-approval-count-visible { display: inline-flex; }
+.cm-approval-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--green-tint);
+  color: var(--green);
+  border-radius: var(--r-md);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 /* ---------- Kunlik tarix ---------- */
 .cm-history-item {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px;

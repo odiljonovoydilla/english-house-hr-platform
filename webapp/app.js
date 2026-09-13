@@ -2460,12 +2460,6 @@ const CM_EXPENSE_FIELDS = [
   { id: "cash_expense", label: "💵 Naqt xarajat" },
 ];
 
-const CM_TASK_FIELDS = [
-  { id: "admin_task", label: "🗂️ Administratorga topshiriq" },
-  { id: "sales_task", label: "📞 Sotuvchiga topshiriq" },
-  { id: "edu_manager_task", label: "🎓 Ta'lim menejeriga topshiriq" },
-];
-
 function _cmNumberFieldsHtml(fields) {
   return fields.map((f) => `
     <div class="sc-field">
@@ -2529,15 +2523,6 @@ function _parseUzPhone(formatted) {
   return digits.length === 9 ? "+998" + digits : null;
 }
 
-function _cmTaskFieldsHtml(fields) {
-  return fields.map((f) => `
-    <div class="sc-field">
-      <label>${f.label}</label>
-      <textarea id="cm_${f.id}" rows="3" placeholder="Topshiriq matnini yozing..."></textarea>
-    </div>
-  `).join("");
-}
-
 function _todayStr() {
   const d = new Date();
   const y = d.getFullYear();
@@ -2599,13 +2584,14 @@ const EDU_PENDING_LABELS = {
   risky_count: "⚠️ Xavfli o'quvchilar",
 };
 
-async function _renderGenericPendingList(box, { apiPrefix, labels }) {
-  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+async function _renderGenericPendingList(box, { apiPrefix, labels, onCount }) {
+  box.innerHTML = `<div class="center-box" style="min-height:80px;"><div class="spinner"></div></div>`;
   try {
     const rows = await api(`/api/${apiPrefix}/pending`);
+    if (onCount) onCount(rows.length);
 
     if (!rows.length) {
-      box.innerHTML = `<p style="color:var(--hint);font-size:13px;margin:0 0 16px;">Hozircha tasdiqlash kutilayotgan yozuv yo'q.</p>`;
+      box.innerHTML = `<p class="cm-approval-empty">✅ Kutilayotgan yozuv yo'q</p>`;
       return;
     }
 
@@ -2640,7 +2626,7 @@ async function _renderGenericPendingList(box, { apiPrefix, labels }) {
                 method: "POST",
                 body: JSON.stringify({ teacher_id: teacherId, date }),
               });
-              _renderGenericPendingList(box, { apiPrefix, labels });
+              _renderGenericPendingList(box, { apiPrefix, labels, onCount });
             } catch (err) {
               safeAlert("Xato: " + err.message);
             }
@@ -2662,7 +2648,7 @@ async function _renderGenericPendingList(box, { apiPrefix, labels }) {
                 method: "POST",
                 body: JSON.stringify({ teacher_id: teacherId, date, note: note || null }),
               });
-              _renderGenericPendingList(box, { apiPrefix, labels });
+              _renderGenericPendingList(box, { apiPrefix, labels, onCount });
             } catch (err) {
               safeAlert("Xato: " + err.message);
             }
@@ -2672,40 +2658,65 @@ async function _renderGenericPendingList(box, { apiPrefix, labels }) {
     });
   } catch (err) {
     box.innerHTML = `<div class="error-box">${err.message}</div>`;
+    if (onCount) onCount(0);
   }
 }
 
-async function renderSMPendingList(box) {
-  await _renderGenericPendingList(box, { apiPrefix: "sales-manager-daily", labels: SM_PENDING_LABELS });
+async function renderSMPendingList(box, onCount) {
+  await _renderGenericPendingList(box, { apiPrefix: "sales-manager-daily", labels: SM_PENDING_LABELS, onCount });
 }
 
-async function renderAdminPendingList(box) {
-  await _renderGenericPendingList(box, { apiPrefix: "administrator-daily", labels: ADMIN_PENDING_LABELS });
+async function renderAdminPendingList(box, onCount) {
+  await _renderGenericPendingList(box, { apiPrefix: "administrator-daily", labels: ADMIN_PENDING_LABELS, onCount });
 }
 
-async function renderEduPendingList(box) {
-  await _renderGenericPendingList(box, { apiPrefix: "edu-manager-daily", labels: EDU_PENDING_LABELS });
+async function renderEduPendingList(box, onCount) {
+  await _renderGenericPendingList(box, { apiPrefix: "edu-manager-daily", labels: EDU_PENDING_LABELS, onCount });
 }
 
 async function renderCompanyTab(box) {
-  const allFieldDefs = [...CM_REVENUE_FIELDS, ...CM_EXPENSE_FIELDS, ...CM_TASK_FIELDS];
+  const allFieldDefs = [...CM_REVENUE_FIELDS, ...CM_EXPENSE_FIELDS];
   const allFieldIds = allFieldDefs.map((f) => f.id);
   const revenueIds = CM_REVENUE_FIELDS.map((f) => f.id);
   const expenseIds = CM_EXPENSE_FIELDS.map((f) => f.id);
   const moneyIds = [...revenueIds, ...expenseIds];
-  const taskIds = CM_TASK_FIELDS.map((f) => f.id);
 
   const AUTO_FIELD_DEFS = [...CM_STUDENT_FIELDS, ...CM_CONTACT_FIELDS];
 
   box.innerHTML = `
-    <h2>📋 Sotuv menejeri — tasdiqlash kutilmoqda</h2>
-    <div id="smPendingList"><div class="center-box"><div class="spinner"></div></div></div>
+    <div class="cm-approvals-card">
+      <div class="cm-approvals-head">
+        <span class="cm-approvals-icon">📋</span>
+        <div>
+          <div class="cm-approvals-title">Tasdiqlash kutilmoqda</div>
+          <div class="cm-approvals-sub">Xodimlarning kunlik yozuvlarini ko'rib chiqing</div>
+        </div>
+      </div>
 
-    <h2>📋 Administrator — tasdiqlash kutilmoqda</h2>
-    <div id="adminPendingList"><div class="center-box"><div class="spinner"></div></div></div>
+      <div class="cm-approval-group">
+        <div class="cm-approval-group-title">
+          <span>📞 Sotuv menejeri</span>
+          <span class="cm-approval-count" id="smPendingCount"></span>
+        </div>
+        <div id="smPendingList"><div class="center-box" style="min-height:80px;"><div class="spinner"></div></div></div>
+      </div>
 
-    <h2>📋 Ta'lim menejeri — tasdiqlash kutilmoqda</h2>
-    <div id="eduPendingList"><div class="center-box"><div class="spinner"></div></div></div>
+      <div class="cm-approval-group">
+        <div class="cm-approval-group-title">
+          <span>🗂️ Administrator</span>
+          <span class="cm-approval-count" id="adminPendingCount"></span>
+        </div>
+        <div id="adminPendingList"><div class="center-box" style="min-height:80px;"><div class="spinner"></div></div></div>
+      </div>
+
+      <div class="cm-approval-group">
+        <div class="cm-approval-group-title">
+          <span>🎓 Ta'lim menejeri</span>
+          <span class="cm-approval-count" id="eduPendingCount"></span>
+        </div>
+        <div id="eduPendingList"><div class="center-box" style="min-height:80px;"><div class="spinner"></div></div></div>
+      </div>
+    </div>
 
     <div class="card">
       <label>Sana</label>
@@ -2724,9 +2735,6 @@ async function renderCompanyTab(box) {
     <div class="card sc-form">${_cmMoneyFieldsHtml(CM_EXPENSE_FIELDS)}</div>
     <div id="cmExpenseTotal" class="total-box"></div>
 
-    <h2>📝 Topshiriqlar</h2>
-    <div class="card sc-form">${_cmTaskFieldsHtml(CM_TASK_FIELDS)}</div>
-
     <button class="primary" id="cmSaveBtn">Saqlash</button>
     <div id="cmMsg" style="margin-top:8px;font-size:13px;"></div>
 
@@ -2734,9 +2742,16 @@ async function renderCompanyTab(box) {
     <div id="cmHistory"><div class="center-box"><div class="spinner"></div></div></div>
   `;
 
-  await renderSMPendingList(box.querySelector("#smPendingList"));
-  await renderAdminPendingList(box.querySelector("#adminPendingList"));
-  await renderEduPendingList(box.querySelector("#eduPendingList"));
+  function setPendingCount(id, count) {
+    const el = box.querySelector(id);
+    if (!el) return;
+    el.textContent = count > 0 ? String(count) : "";
+    el.classList.toggle("cm-approval-count-visible", count > 0);
+  }
+
+  await renderSMPendingList(box.querySelector("#smPendingList"), (c) => setPendingCount("#smPendingCount", c));
+  await renderAdminPendingList(box.querySelector("#adminPendingList"), (c) => setPendingCount("#adminPendingCount", c));
+  await renderEduPendingList(box.querySelector("#eduPendingList"), (c) => setPendingCount("#eduPendingCount", c));
 
   const dateInput = box.querySelector("#cmDate");
 
@@ -2859,9 +2874,7 @@ async function renderCompanyTab(box) {
       const body = { date: dateInput.value };
       allFieldIds.forEach((id) => {
         const input = box.querySelector(`#cm_${id}`);
-        if (taskIds.includes(id)) {
-          body[id] = input.value || null;
-        } else if (moneyIds.includes(id)) {
+        if (moneyIds.includes(id)) {
           body[id] = _parseFormattedNumber(input.value);
         } else {
           body[id] = input.value === "" ? null : parseFloat(input.value);

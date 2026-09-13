@@ -45,7 +45,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0b0d14;
     --surface: #151824;
     --surface-2: #1b1f2e;
@@ -68,6 +68,29 @@
   }
 }
 
+/* Foydalanuvchi qo'lda tanlagan rejim — tizim sozlamasidan ustun turadi */
+:root[data-theme="dark"] {
+  --bg: #0b0d14;
+  --surface: #151824;
+  --surface-2: #1b1f2e;
+  --tint: rgba(124, 58, 237, 0.16);
+  --tint-strong: rgba(124, 58, 237, 0.28);
+  --divider: #262b3d;
+  --input-bg: #1b1f2e;
+
+  --text: #eceef5;
+  --text-muted: #9aa0b4;
+
+  --green-tint: rgba(22, 163, 74, 0.16);
+  --red-tint: rgba(220, 38, 38, 0.18);
+  --orange-tint: rgba(217, 119, 6, 0.18);
+  --violet-tint: rgba(109, 40, 217, 0.22);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 16px -4px rgba(0, 0, 0, 0.45), 0 2px 6px -2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 20px 48px -12px rgba(0, 0, 0, 0.55);
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -80,6 +103,7 @@ body {
 }
 
 #app { padding: 16px; max-width: 720px; margin: 0 auto; }
+#app.shell-mode { padding: 0; max-width: none; margin: 0; }
 
 a { color: var(--primary); }
 
@@ -268,19 +292,6 @@ table th { color: var(--text-muted); font-weight: 600; }
 .month-picker { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
 .month-picker select { margin-bottom: 0; }
 
-/* ---------- Topbar ---------- */
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 18px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--divider);
-  position: sticky;
-  top: 0;
-  z-index: 50;
-}
-.topbar-title { font-weight: 800; font-size: 15px; letter-spacing: -0.01em; }
 .icon-btn {
   border: none;
   background: var(--surface-2);
@@ -858,3 +869,154 @@ textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 
 .login-card .lp-logo-mark { margin: 0 auto 18px; }
 .login-card h1 { font-size: 20px; margin-bottom: 6px; }
 .login-card p { color: var(--text-muted); font-size: 13.5px; margin-bottom: 22px; }
+
+/* ============================================================
+   APP SHELL — chap tomonda doimiy menyu (sidebar) + asosiy kontent
+   ============================================================ */
+
+body.shell-active { padding-bottom: 0; }
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  align-items: stretch;
+}
+
+.sidebar {
+  width: 264px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--divider);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 14px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  z-index: 40;
+  transition: transform 0.25s var(--ease);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  padding: 4px 8px 18px;
+}
+.sidebar-brand-mark {
+  width: 32px; height: 32px; border-radius: var(--r-sm);
+  background: var(--primary-grad); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0;
+}
+
+.sidebar-user {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 8px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--divider);
+  padding-bottom: 18px;
+}
+.sidebar-user-avatar {
+  width: 38px; height: 38px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; color: #fff; flex-shrink: 0;
+  box-shadow: 0 3px 10px -2px rgba(0,0,0,0.25);
+}
+.sidebar-user-name { font-size: 13.5px; font-weight: 700; line-height: 1.3; }
+.sidebar-user-role { font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  overflow-y: auto;
+}
+.sidebar-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.sidebar-item:hover { background: var(--surface-2); color: var(--text); }
+.sidebar-item.active { background: var(--tint); color: var(--primary); }
+.sidebar-icon { font-size: 17px; width: 22px; text-align: center; flex-shrink: 0; }
+.sidebar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.sidebar-footer {
+  border-top: 1px solid var(--divider);
+  padding-top: 12px;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-action {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.sidebar-action:hover { background: var(--surface-2); color: var(--text); }
+
+.mobile-topbar {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--divider);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+.mobile-topbar-brand { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 14.5px; }
+.sidebar-overlay {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(10, 12, 20, 0.5);
+  z-index: 35;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  padding: 28px 32px 48px;
+}
+.app-main-inner { max-width: 900px; margin: 0 auto; }
+
+@media (max-width: 900px) {
+  .app-main { padding: 20px 16px 40px; }
+}
+
+@media (max-width: 860px) {
+  .app-shell { flex-direction: column; }
+  .mobile-topbar { display: flex; width: 100%; }
+  .sidebar {
+    position: fixed;
+    left: 0; top: 0; bottom: 0;
+    transform: translateX(-100%);
+    box-shadow: var(--shadow-lg);
+  }
+  .app-shell.sidebar-open .sidebar { transform: translateX(0); }
+  .app-shell.sidebar-open .sidebar-overlay { display: block; }
+}

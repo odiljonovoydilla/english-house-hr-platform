@@ -6,6 +6,31 @@
 
 const appEl = document.getElementById("app");
 
+// ============================================================
+// TUNGI / KUNDUZGI REJIM
+// ============================================================
+
+function getTheme() {
+  const saved = (() => {
+    try { return localStorage.getItem("eh-theme"); } catch (e) { return null; }
+  })();
+  if (saved === "dark" || saved === "light") return saved;
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+}
+
+function toggleTheme() {
+  const next = getTheme() === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try { localStorage.setItem("eh-theme", next); } catch (e) { /* localStorage yo'q bo'lsa ham ilova ishlayversin */ }
+  return next;
+}
+
+applyTheme(getTheme());
+
 function fmt(n) {
   if (n === null || n === undefined) return "-";
   return Number(n).toLocaleString("uz-UZ", { maximumFractionDigits: 0 }) + " so'm";
@@ -244,22 +269,94 @@ function showPasswordModal(password, name) {
 }
 
 // ============================================================
-// TOPBAR — sarlavha va kengaytirish (fullscreen) tugmasi
+// APP SHELL — chap tomondagi doimiy menyu (sidebar) + kontent maydoni.
+// Barcha rollar (Teacher, SubjectTeacher, Staff, Admin, EduManager) shu
+// bitta komponentdan foydalanadi — faqat items/dispatch/hero farqlanadi.
 // ============================================================
 
-function renderTopBar() {
-  const bar = document.getElementById("topbar");
-  if (!bar) return;
-  bar.innerHTML = `
-    <div class="topbar">
-      <span class="topbar-title">🏫 English House</span>
-      <button id="logoutBtn" class="icon-btn" title="Chiqish">⎋</button>
+function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradient, heroLabel }) {
+  document.body.classList.add("shell-active");
+  appEl.classList.add("shell-mode");
+  appEl.innerHTML = "";
+
+  const theme = getTheme();
+  const shell = el(`
+    <div class="app-shell">
+      <div class="mobile-topbar">
+        <button class="icon-btn" id="sidebarOpenBtn" title="Menyu">☰</button>
+        <span class="mobile-topbar-brand">🏫 English House</span>
+        <span style="width:34px;"></span>
+      </div>
+      <div class="sidebar-overlay" id="sidebarOverlay"></div>
+      <aside class="sidebar" id="appSidebar">
+        <div class="sidebar-brand">
+          <span class="sidebar-brand-mark">🏫</span>
+          <span>English House</span>
+        </div>
+        <div class="sidebar-user">
+          <div class="sidebar-user-avatar" style="background:${heroGradient};">${heroIcon}</div>
+          <div>
+            <div class="sidebar-user-name">${me.full_name}</div>
+            <div class="sidebar-user-role">${heroLabel}</div>
+          </div>
+        </div>
+        <nav class="sidebar-nav">
+          ${items.map((it) => `
+            <button class="sidebar-item${it.id === activeId ? " active" : ""}" data-tab="${it.id}">
+              <span class="sidebar-icon">${it.icon}</span>
+              <span class="sidebar-label">${it.label}</span>
+            </button>
+          `).join("")}
+        </nav>
+        <div class="sidebar-footer">
+          <button class="sidebar-action" id="themeToggleBtn">
+            <span class="sidebar-icon" id="themeToggleIcon">${theme === "dark" ? "☀️" : "🌙"}</span>
+            <span class="sidebar-label" id="themeToggleLabel">${theme === "dark" ? "Kunduzgi rejim" : "Tungi rejim"}</span>
+          </button>
+          <button class="sidebar-action" id="sidebarLogoutBtn">
+            <span class="sidebar-icon">⎋</span>
+            <span class="sidebar-label">Chiqish</span>
+          </button>
+        </div>
+      </aside>
+      <main class="app-main">
+        <div class="app-main-inner" id="shellContent"></div>
+      </main>
     </div>
-  `;
-  bar.querySelector("#logoutBtn").addEventListener("click", async () => {
+  `);
+  appEl.appendChild(shell);
+
+  const contentBox = shell.querySelector("#shellContent");
+  const sidebar = shell.querySelector("#appSidebar");
+
+  function closeMobileSidebar() {
+    shell.classList.remove("sidebar-open");
+  }
+
+  shell.querySelector("#sidebarOpenBtn").addEventListener("click", () => shell.classList.add("sidebar-open"));
+  shell.querySelector("#sidebarOverlay").addEventListener("click", closeMobileSidebar);
+
+  shell.querySelectorAll("[data-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      shell.querySelectorAll("[data-tab]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      closeMobileSidebar();
+      dispatch(btn.dataset.tab, contentBox, me);
+    });
+  });
+
+  shell.querySelector("#themeToggleBtn").addEventListener("click", () => {
+    const t = toggleTheme();
+    shell.querySelector("#themeToggleIcon").textContent = t === "dark" ? "☀️" : "🌙";
+    shell.querySelector("#themeToggleLabel").textContent = t === "dark" ? "Kunduzgi rejim" : "Tungi rejim";
+  });
+
+  shell.querySelector("#sidebarLogoutBtn").addEventListener("click", async () => {
     try { await api("/api/logout", { method: "POST" }); } catch (e) { /* baribir chiqamiz */ }
     window.location.href = "/";
   });
+
+  dispatch(activeId, contentBox, me);
 }
 
 // ============================================================
@@ -267,7 +364,6 @@ function renderTopBar() {
 // ============================================================
 
 async function boot() {
-  renderTopBar();
   try {
     const me = await api("/api/auth", { method: "POST" });
     await renderTestModeBanner();
@@ -282,7 +378,7 @@ async function boot() {
     }
   } catch (err) {
     if (err.status === 401) {
-      // Sessiya yo'q yoki tugagan — Login Widget sahifasiga yo'naltiramiz
+      // Sessiya yo'q yoki tugagan — login sahifasiga yo'naltiramiz
       window.location.href = "/login";
       return;
     }
@@ -328,79 +424,32 @@ async function renderTestModeBanner() {
 // TEACHER VIEW — menyu asosida: Teacher / KPI / Ish haqi
 // ============================================================
 
+const TEACHER_NAV_ITEMS = [
+  { id: "teacher", icon: "🧑‍🏫", label: "Teacher" },
+  { id: "kpi", icon: "📊", label: "KPI" },
+  { id: "salary", icon: "💰", label: "Ish haqi" },
+  { id: "tasks", icon: "📋", label: "Topshiriqlar" },
+  { id: "rules", icon: "📜", label: "Asosiy qoidalar" },
+];
+
 function renderTeacherView(me) {
-  renderTeacherHome(me);
-}
-
-function renderTeacherHome(me) {
-  appEl.innerHTML = `
-    <div class="teacher-hero">
-      <div class="teacher-avatar">🧑‍🏫</div>
-      <h1 style="margin-bottom:2px;">Salom, ${me.full_name} 👋</h1>
-      <div class="teacher-sub">${me.grade ? me.grade + " · " : ""}${me.role}</div>
-    </div>
-    <div class="menu-grid">
-      <div class="menu-card" data-nav="teacher">
-        <div class="menu-icon">🧑‍🏫</div>
-        <div class="menu-text">
-          <div class="menu-label">Teacher</div>
-          <div class="menu-desc">Grade, stavka va fix ma'lumotlari</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      <div class="menu-card" data-nav="kpi">
-        <div class="menu-icon">📊</div>
-        <div class="menu-text">
-          <div class="menu-label">KPI</div>
-          <div class="menu-desc">Scorecard tafsiloti va umumiy KPI foizi</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      <div class="menu-card" data-nav="salary">
-        <div class="menu-icon">💰</div>
-        <div class="menu-text">
-          <div class="menu-label">Ish haqi</div>
-          <div class="menu-desc">Fix, avans, KPI va bonus</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      <div class="menu-card" data-nav="tasks">
-        <div class="menu-icon">📋</div>
-        <div class="menu-text">
-          <div class="menu-label">Topshiriqlar</div>
-          <div class="menu-desc">Sizga yuborilgan va siz yuborgan topshiriqlar</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      <div class="menu-card" data-nav="rules">
-        <div class="menu-icon">📜</div>
-        <div class="menu-text">
-          <div class="menu-label">Asosiy qoidalar</div>
-          <div class="menu-desc">KPI qanday hisoblanishini bilib oling</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-    </div>
-  `;
-
-  appEl.querySelectorAll("[data-nav]").forEach((card) => {
-    card.addEventListener("click", () => renderTeacherSection(card.dataset.nav, me));
+  renderSidebarShell(me, {
+    items: TEACHER_NAV_ITEMS,
+    activeId: "teacher",
+    dispatch: renderTeacherTab,
+    heroIcon: "🧑‍🏫",
+    heroGradient: "var(--primary-grad)",
+    heroLabel: `${me.grade ? me.grade + " · " : ""}${me.role}`,
   });
 }
 
-function renderTeacherSection(section, me) {
-  appEl.innerHTML = "";
-  appEl.appendChild(el(`<button class="back-btn" id="teacherBackBtn">← Orqaga</button>`));
-  const box = el(`<div id="teacherSectionContent"></div>`);
-  appEl.appendChild(box);
-
-  appEl.querySelector("#teacherBackBtn").addEventListener("click", () => renderTeacherHome(me));
-
-  if (section === "teacher") renderTeacherProfileSection(box);
-  else if (section === "kpi") renderTeacherKpiSection(box);
-  else if (section === "salary") renderTeacherSalarySection(box);
-  else if (section === "tasks") renderTasksTab(box, me);
-  else if (section === "rules") renderKpiRulesTab(box);
+function renderTeacherTab(tab, box, me) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  if (tab === "teacher") renderTeacherProfileSection(box);
+  else if (tab === "kpi") renderTeacherKpiSection(box);
+  else if (tab === "salary") renderTeacherSalarySection(box);
+  else if (tab === "tasks") renderTasksTab(box, me);
+  else if (tab === "rules") renderKpiRulesTab(box);
 }
 
 function _monthSelectHtml(id) {
@@ -552,86 +601,36 @@ const STAFF_ROLE_LABELS = {
 };
 
 function renderStaffView(me) {
-  renderStaffHome(me);
-}
-
-function renderStaffHome(me) {
   const roleLabel = STAFF_ROLE_LABELS[me.role] || me.role;
   const isSalesManager = me.role === "SalesManager";
   const isAdministrator = me.role === "Administrator";
   const hasDayTab = isSalesManager || isAdministrator;
-  appEl.innerHTML = `
-    <div class="teacher-hero">
-      <div class="teacher-avatar" style="background: linear-gradient(135deg, #607d8b, #37474f);">🧑‍💼</div>
-      <h1 style="margin-bottom:2px;">Salom, ${me.full_name} 👋</h1>
-      <div class="teacher-sub">${roleLabel}</div>
-    </div>
-    <div class="menu-grid">
-      ${hasDayTab ? `
-        <div class="menu-card" data-nav="day">
-          <div class="menu-icon">📅</div>
-          <div class="menu-text">
-            <div class="menu-label">Kun</div>
-            <div class="menu-desc">Kunlik ish vazifalarini kiritish</div>
-          </div>
-          <div class="menu-arrow">›</div>
-        </div>
-      ` : ""}
-      <div class="menu-card" data-nav="profile">
-        <div class="menu-icon">👤</div>
-        <div class="menu-text">
-          <div class="menu-label">Ma'lumotim</div>
-          <div class="menu-desc">Lavozim va oylik maosh</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      <div class="menu-card" data-nav="salary">
-        <div class="menu-icon">💰</div>
-        <div class="menu-text">
-          <div class="menu-label">Ish haqi</div>
-          <div class="menu-desc">Fix, avans, bonus va rashchyot</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      <div class="menu-card" data-nav="tasks">
-        <div class="menu-icon">📋</div>
-        <div class="menu-text">
-          <div class="menu-label">Topshiriqlar</div>
-          <div class="menu-desc">Sizga yuborilgan va siz yuborgan topshiriqlar</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      ${isSalesManager ? `
-        <div class="menu-card" data-nav="kpi">
-          <div class="menu-icon">🚀</div>
-          <div class="menu-text">
-            <div class="menu-label">KPI</div>
-            <div class="menu-desc">Natijalaringiz va bonusga yo'l xaritasi</div>
-          </div>
-          <div class="menu-arrow">›</div>
-        </div>
-      ` : ""}
-    </div>
-  `;
 
-  appEl.querySelectorAll("[data-nav]").forEach((card) => {
-    card.addEventListener("click", () => renderStaffSection(card.dataset.nav, me));
+  const items = [
+    ...(hasDayTab ? [{ id: "day", icon: "📅", label: "Kun" }] : []),
+    { id: "profile", icon: "👤", label: "Ma'lumotim" },
+    { id: "salary", icon: "💰", label: "Ish haqi" },
+    { id: "tasks", icon: "📋", label: "Topshiriqlar" },
+    ...(isSalesManager ? [{ id: "kpi", icon: "🚀", label: "KPI" }] : []),
+  ];
+
+  renderSidebarShell(me, {
+    items,
+    activeId: items[0].id,
+    dispatch: renderStaffTab,
+    heroIcon: "🧑‍💼",
+    heroGradient: "linear-gradient(135deg, #607d8b, #37474f)",
+    heroLabel: roleLabel,
   });
 }
 
-function renderStaffSection(section, me) {
-  appEl.innerHTML = "";
-  appEl.appendChild(el(`<button class="back-btn" id="staffBackBtn">← Orqaga</button>`));
-  const box = el(`<div id="staffSectionContent"></div>`);
-  appEl.appendChild(box);
-
-  appEl.querySelector("#staffBackBtn").addEventListener("click", () => renderStaffHome(me));
-
-  if (section === "profile") renderStaffProfileSection(box, me);
-  else if (section === "salary") renderStaffSalarySection(box, me);
-  else if (section === "kpi") renderSalesManagerOwnKpiTab(box, me);
-  else if (section === "tasks") renderTasksTab(box, me);
-  else if (section === "day") {
+function renderStaffTab(tab, box, me) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  if (tab === "profile") renderStaffProfileSection(box, me);
+  else if (tab === "salary") renderStaffSalarySection(box, me);
+  else if (tab === "kpi") renderSalesManagerOwnKpiTab(box, me);
+  else if (tab === "tasks") renderTasksTab(box, me);
+  else if (tab === "day") {
     if (me.role === "SalesManager") renderSalesManagerDayTab(box, me);
     else if (me.role === "Administrator") renderAdministratorDayTab(box, me);
   }
@@ -701,61 +700,28 @@ async function renderStaffSalarySection(box, me) {
 // SUBJECT TEACHER VIEW — Fan o'qituvchilari uchun (tushum ulushi asosida)
 // ============================================================
 
+const SUBJECT_TEACHER_NAV_ITEMS = [
+  { id: "profile", icon: "👤", label: "Ma'lumotim" },
+  { id: "salary", icon: "💰", label: "Ish haqi" },
+  { id: "tasks", icon: "📋", label: "Topshiriqlar" },
+];
+
 function renderSubjectTeacherView(me) {
-  renderSubjectTeacherHome(me);
-}
-
-function renderSubjectTeacherHome(me) {
-  appEl.innerHTML = `
-    <div class="teacher-hero">
-      <div class="teacher-avatar" style="background: linear-gradient(135deg, #8e44ad, #5b2c6f);">📖</div>
-      <h1 style="margin-bottom:2px;">Salom, ${me.full_name} 👋</h1>
-      <div class="teacher-sub">${me.subject ? me.subject + " · " : ""}Fan o'qituvchisi</div>
-    </div>
-    <div class="menu-grid">
-      <div class="menu-card" data-nav="profile">
-        <div class="menu-icon">👤</div>
-        <div class="menu-text">
-          <div class="menu-label">Ma'lumotim</div>
-          <div class="menu-desc">Fan va tushumdan ulush foizi</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      <div class="menu-card" data-nav="salary">
-        <div class="menu-icon">💰</div>
-        <div class="menu-text">
-          <div class="menu-label">Ish haqi</div>
-          <div class="menu-desc">Tushum, ulush, avans va bonus</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-      <div class="menu-card" data-nav="tasks">
-        <div class="menu-icon">📋</div>
-        <div class="menu-text">
-          <div class="menu-label">Topshiriqlar</div>
-          <div class="menu-desc">Sizga yuborilgan va siz yuborgan topshiriqlar</div>
-        </div>
-        <div class="menu-arrow">›</div>
-      </div>
-    </div>
-  `;
-
-  appEl.querySelectorAll("[data-nav]").forEach((card) => {
-    card.addEventListener("click", () => renderSubjectTeacherSection(card.dataset.nav, me));
+  renderSidebarShell(me, {
+    items: SUBJECT_TEACHER_NAV_ITEMS,
+    activeId: "profile",
+    dispatch: renderSubjectTeacherTab,
+    heroIcon: "📖",
+    heroGradient: "linear-gradient(135deg, #8e44ad, #5b2c6f)",
+    heroLabel: `${me.subject ? me.subject + " · " : ""}Fan o'qituvchisi`,
   });
 }
 
-function renderSubjectTeacherSection(section, me) {
-  appEl.innerHTML = "";
-  appEl.appendChild(el(`<button class="back-btn" id="stBackBtn">← Orqaga</button>`));
-  const box = el(`<div id="stSectionContent"></div>`);
-  appEl.appendChild(box);
-
-  appEl.querySelector("#stBackBtn").addEventListener("click", () => renderSubjectTeacherHome(me));
-
-  if (section === "profile") renderSubjectTeacherProfileSection(box);
-  else if (section === "salary") renderSubjectTeacherSalarySection(box);
-  else if (section === "tasks") renderTasksTab(box, me);
+function renderSubjectTeacherTab(tab, box, me) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  if (tab === "profile") renderSubjectTeacherProfileSection(box);
+  else if (tab === "salary") renderSubjectTeacherSalarySection(box);
+  else if (tab === "tasks") renderTasksTab(box, me);
 }
 
 async function renderSubjectTeacherProfileSection(box) {
@@ -1297,44 +1263,14 @@ function renderAdminHome(me) {
   // barchasini ko'radi va boshqaradi, lekin tizim sozlamalarini (grade narxlari, foizlar) o'zgartira olmaydi.
   const tabsToShow = me.role === "CEO" ? ADMIN_TABS : ADMIN_TABS.filter((t) => t.id !== "settings");
 
-  appEl.innerHTML = `
-    <div class="teacher-hero">
-      <div class="teacher-avatar" style="background:${hero.gradient};">${hero.icon}</div>
-      <h1 style="margin-bottom:2px;">${me.full_name}</h1>
-      <div class="teacher-sub">${hero.label}</div>
-    </div>
-    <div class="menu-grid">
-      ${tabsToShow.map((t) => `
-        <div class="menu-card" data-nav="${t.id}">
-          <div class="menu-icon">${t.icon}</div>
-          <div class="menu-text">
-            <div class="menu-label">${t.label}</div>
-            <div class="menu-desc">${t.desc}</div>
-          </div>
-          <div class="menu-arrow">›</div>
-        </div>
-      `).join("")}
-    </div>
-  `;
-
-  appEl.querySelectorAll("[data-nav]").forEach((card) => {
-    card.addEventListener("click", () => renderAdminSection(card.dataset.nav, me));
+  renderSidebarShell(me, {
+    items: tabsToShow,
+    activeId: tabsToShow[0].id,
+    dispatch: renderAdminTab,
+    heroIcon: hero.icon,
+    heroGradient: hero.gradient,
+    heroLabel: hero.label,
   });
-}
-
-function renderAdminSection(tabId, me) {
-  const tabInfo = ADMIN_TABS.find((t) => t.id === tabId);
-  appEl.innerHTML = "";
-  appEl.appendChild(el(`<button class="back-btn" id="adminBackBtn">← Orqaga</button>`));
-  if (tabInfo) {
-    appEl.appendChild(el(`<h1 style="margin:4px 0 14px;">${tabInfo.icon} ${tabInfo.label}</h1>`));
-  }
-  const contentEl = el(`<div id="adminContent"></div>`);
-  appEl.appendChild(contentEl);
-
-  appEl.querySelector("#adminBackBtn").addEventListener("click", () => renderAdminHome(me));
-
-  renderAdminTab(tabId, contentEl, me);
 }
 
 async function renderAdminTab(tab, box, me) {
@@ -1370,48 +1306,14 @@ const EDU_TABS = [
 ];
 
 function renderEduManagerView(me) {
-  renderEduManagerHome(me);
-}
-
-function renderEduManagerHome(me) {
-  appEl.innerHTML = `
-    <div class="teacher-hero">
-      <div class="teacher-avatar" style="background: linear-gradient(135deg, #7c5cff, #4b2ee0);">🎓</div>
-      <h1 style="margin-bottom:2px;">${me.full_name}</h1>
-      <div class="teacher-sub">Ta'lim menejeri</div>
-    </div>
-    <div class="menu-grid">
-      ${EDU_TABS.map((t) => `
-        <div class="menu-card" data-nav="${t.id}">
-          <div class="menu-icon">${t.icon}</div>
-          <div class="menu-text">
-            <div class="menu-label">${t.label}</div>
-            <div class="menu-desc">${t.desc}</div>
-          </div>
-          <div class="menu-arrow">›</div>
-        </div>
-      `).join("")}
-    </div>
-  `;
-
-  appEl.querySelectorAll("[data-nav]").forEach((card) => {
-    card.addEventListener("click", () => renderEduManagerSection(card.dataset.nav, me));
+  renderSidebarShell(me, {
+    items: EDU_TABS,
+    activeId: EDU_TABS[0].id,
+    dispatch: renderEduTab,
+    heroIcon: "🎓",
+    heroGradient: "linear-gradient(135deg, #7c5cff, #4b2ee0)",
+    heroLabel: "Ta'lim menejeri",
   });
-}
-
-function renderEduManagerSection(tabId, me) {
-  const tabInfo = EDU_TABS.find((t) => t.id === tabId);
-  appEl.innerHTML = "";
-  appEl.appendChild(el(`<button class="back-btn" id="eduBackBtn">← Orqaga</button>`));
-  if (tabInfo) {
-    appEl.appendChild(el(`<h1 style="margin:4px 0 14px;">${tabInfo.icon} ${tabInfo.label}</h1>`));
-  }
-  const contentEl = el(`<div id="eduContent"></div>`);
-  appEl.appendChild(contentEl);
-
-  appEl.querySelector("#eduBackBtn").addEventListener("click", () => renderEduManagerHome(me));
-
-  renderEduTab(tabId, contentEl, me);
 }
 
 async function renderEduTab(tab, box, me) {

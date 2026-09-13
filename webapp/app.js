@@ -1,0 +1,5526 @@
+// ============================================================
+// English House HR Platform — frontend (brauzer ilovasi)
+// Auth Telegram Login Widget orqali olingan sessiya cookie'siga
+// asoslanadi (server.py: /login, /api/telegram-login-callback).
+// ============================================================
+
+const appEl = document.getElementById("app");
+
+function fmt(n) {
+  if (n === null || n === undefined) return "-";
+  return Number(n).toLocaleString("uz-UZ", { maximumFractionDigits: 0 }) + " so'm";
+}
+
+function currentMonth() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function lastNMonths(n) {
+  const out = [];
+  const d = new Date();
+  for (let i = 0; i < n; i++) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    out.push(`${y}-${m}`);
+    d.setMonth(d.getMonth() - 1);
+  }
+  return out;
+}
+
+function _monthDateRange(monthStr) {
+  const [y, m] = monthStr.split("-").map(Number);
+  const start = `${monthStr}-01`;
+  const lastDay = new Date(y, m, 0).getDate();
+  const end = `${monthStr}-${String(lastDay).padStart(2, "0")}`;
+  return { start, end };
+}
+
+function _nextNMonths(n) {
+  const out = [];
+  const d = new Date();
+  for (let i = 1; i <= n; i++) {
+    d.setMonth(d.getMonth() + 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    out.push(`${y}-${m}`);
+  }
+  return out;
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    ...options,
+    credentials: "same-origin",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const error = new Error(body.detail || body.error || `Xato: ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
+  return res.json();
+}
+
+function el(html) {
+  const div = document.createElement("div");
+  div.innerHTML = html.trim();
+  return div.firstElementChild;
+}
+
+// ============================================================
+// UMUMIY YORDAMCHI UI: tasdiqlash oynasi, havola oynasi, nusxalash
+// ============================================================
+
+function showAmountChoiceModal(title, message, autoAmount, onConfirm) {
+  const overlay = el(`
+    <div class="modal-overlay">
+      <div class="modal-box">
+        <h3>${title}</h3>
+        <div class="modal-message">${message}</div>
+        <div class="amount-choice-row">
+          <label class="amount-choice-option">
+            <input type="radio" name="amountMode" value="auto" checked />
+            <span>Avtomatik hisoblangan: <b>${fmt(autoAmount)}</b></span>
+          </label>
+          <label class="amount-choice-option">
+            <input type="radio" name="amountMode" value="manual" />
+            <span>Qo'lda kiritish</span>
+          </label>
+        </div>
+        <input type="text" inputmode="numeric" id="amountChoiceManualInput" placeholder="Summani kiriting" style="display:none;" />
+        <div class="modal-actions">
+          <button class="secondary" id="modalCancel">Bekor qilish</button>
+          <button class="primary danger" id="modalOk">Ha, tasdiqlayman</button>
+        </div>
+      </div>
+    </div>
+  `);
+  document.body.appendChild(overlay);
+
+  const manualInput = overlay.querySelector("#amountChoiceManualInput");
+  _attachMoneyFormatting(manualInput);
+  overlay.querySelectorAll('input[name="amountMode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      manualInput.style.display = radio.value === "manual" && radio.checked ? "block" : "none";
+      if (radio.value === "manual" && radio.checked && !manualInput.value) {
+        manualInput.value = _formatThousands(String(Math.round(autoAmount)));
+      }
+    });
+  });
+
+  overlay.querySelector("#modalCancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#modalOk").addEventListener("click", () => {
+    const mode = overlay.querySelector('input[name="amountMode"]:checked').value;
+    const manualAmount = mode === "manual" ? _parseFormattedNumber(manualInput.value) : null;
+    overlay.remove();
+    onConfirm(manualAmount);
+  });
+}
+
+function showToast(message, type = "info") {
+  // Brauzerning odatiy safeAlert() Telegram WebView'da ba'zan ilovani "muzlatib qo'yadi" —
+  // shuning uchun bu doim xavfsiz, hech qachon bloklamaydigan mini-bildirishnoma.
+  const toast = el(`<div class="app-toast app-toast-${type}">${message}</div>`);
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("app-toast-visible"));
+  setTimeout(() => {
+    toast.classList.remove("app-toast-visible");
+    setTimeout(() => toast.remove(), 300);
+  }, 3200);
+}
+
+function safeAlert(message, type = "info") {
+  showToast(message, type);
+}
+
+function showTextPromptModal(title, placeholder, onSubmit) {
+  // Brauzerning odatiy prompt() o'rniga — xuddi shu sababdan (Telegram WebView xavfsizligi).
+  const overlay = el(`
+    <div class="modal-overlay">
+      <div class="modal-box">
+        <h3>${title}</h3>
+        <textarea id="textPromptInput" rows="3" placeholder="${placeholder || ""}" style="width:100%;box-sizing:border-box;"></textarea>
+        <div class="modal-actions">
+          <button class="secondary" id="modalCancel">Bekor qilish</button>
+          <button class="primary danger" id="modalOk">Tasdiqlash</button>
+        </div>
+      </div>
+    </div>
+  `);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#modalCancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#modalOk").addEventListener("click", () => {
+    const text = overlay.querySelector("#textPromptInput").value.trim();
+    overlay.remove();
+    onSubmit(text || null);
+  });
+}
+
+function showConfirm(title, message, onConfirm) {
+  const overlay = el(`
+    <div class="modal-overlay">
+      <div class="modal-box">
+        <h3>${title}</h3>
+        <div class="modal-message">${message}</div>
+        <div class="modal-actions">
+          <button class="secondary" id="modalCancel">Bekor qilish</button>
+          <button class="primary danger" id="modalOk">Ha, tasdiqlayman</button>
+        </div>
+      </div>
+    </div>
+  `);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#modalCancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#modalOk").addEventListener("click", () => {
+    overlay.remove();
+    onConfirm();
+  });
+}
+
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); } catch (e) { /* jim */ }
+  ta.remove();
+}
+
+function showLinkModal(link, name) {
+  if (!link) {
+    safeAlert("Havola generatsiya qilinmadi. Bot username hali aniqlanmagan bo'lishi mumkin — bir ozdan so'ng qayta urinib ko'ring.");
+    return;
+  }
+  const overlay = el(`
+    <div class="modal-overlay">
+      <div class="modal-box">
+        <h3>${name ? name + " uchun havola" : "Shaxsiy havola"}</h3>
+        <div class="modal-message">
+          <p style="font-size:13px;color:var(--hint);margin-top:0;">
+            Bu havolani xodimga yuboring. U havolani ochib botni ishga tushirgach, tizim uni avtomatik taniydi.
+            Havola <b>bir martalik</b> — ishlatilgach yaroqsiz bo'ladi.
+          </p>
+          <input readonly value="${link}" id="linkInput" onclick="this.select()" />
+        </div>
+        <div class="modal-actions">
+          <button class="secondary" id="modalClose">Yopish</button>
+          <button class="primary" id="modalCopy">Nusxalash</button>
+        </div>
+      </div>
+    </div>
+  `);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#modalClose").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#modalCopy").addEventListener("click", () => {
+    copyText(link);
+    overlay.querySelector("#modalCopy").textContent = "✅ Nusxalandi";
+  });
+}
+
+// ============================================================
+// TOPBAR — sarlavha va kengaytirish (fullscreen) tugmasi
+// ============================================================
+
+function renderTopBar() {
+  const bar = document.getElementById("topbar");
+  if (!bar) return;
+  bar.innerHTML = `
+    <div class="topbar">
+      <span class="topbar-title">🏫 English House</span>
+      <button id="logoutBtn" class="icon-btn" title="Chiqish">⎋</button>
+    </div>
+  `;
+  bar.querySelector("#logoutBtn").addEventListener("click", async () => {
+    try { await api("/api/logout", { method: "POST" }); } catch (e) { /* baribir chiqamiz */ }
+    window.location.href = "/";
+  });
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+
+async function boot() {
+  renderTopBar();
+  try {
+    const me = await api("/api/auth", { method: "POST" });
+    await renderTestModeBanner();
+    if (me.role === "Teacher") {
+      renderTeacherView(me);
+    } else if (me.role === "SubjectTeacher") {
+      renderSubjectTeacherView(me);
+    } else if (me.role === "Administrator" || me.role === "SalesManager") {
+      renderStaffView(me);
+    } else {
+      renderAdminView(me);
+    }
+  } catch (err) {
+    if (err.status === 401) {
+      // Sessiya yo'q yoki tugagan — Login Widget sahifasiga yo'naltiramiz
+      window.location.href = "/login";
+      return;
+    }
+    appEl.innerHTML = "";
+    appEl.appendChild(el(`
+      <div class="error-box">
+        <b>Kirish rad etildi</b><br/>
+        ${err.message}
+      </div>
+    `));
+  }
+}
+
+async function renderTestModeBanner() {
+  try {
+    const status = await api("/api/me/test-mode-status");
+    const existing = document.getElementById("testModeBanner");
+    if (existing) existing.remove();
+
+    if (status.in_test_mode) {
+      const banner = el(`
+        <div id="testModeBanner" class="test-mode-banner">
+          <span>🧪 Sinov rejimi: <b>${status.original_role}</b> (${status.original_full_name}) sifatida asl hisob kutmoqda</span>
+          <button id="exitTestModeBtn">Asl hisobga qaytish</button>
+        </div>
+      `);
+      document.body.insertBefore(banner, appEl);
+      banner.querySelector("#exitTestModeBtn").addEventListener("click", async () => {
+        try {
+          await api("/api/admin/exit-test-mode", { method: "POST" });
+          window.location.reload();
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      });
+    }
+  } catch (err) {
+    // sinov holatini tekshirib bo'lmasa ham, asosiy ilova ishlashda davom etsin
+  }
+}
+
+// ============================================================
+// TEACHER VIEW — menyu asosida: Teacher / KPI / Ish haqi
+// ============================================================
+
+function renderTeacherView(me) {
+  renderTeacherHome(me);
+}
+
+function renderTeacherHome(me) {
+  appEl.innerHTML = `
+    <div class="teacher-hero">
+      <div class="teacher-avatar">🧑‍🏫</div>
+      <h1 style="margin-bottom:2px;">Salom, ${me.full_name} 👋</h1>
+      <div class="teacher-sub">${me.grade ? me.grade + " · " : ""}${me.role}</div>
+    </div>
+    <div class="menu-grid">
+      <div class="menu-card" data-nav="teacher">
+        <div class="menu-icon">🧑‍🏫</div>
+        <div class="menu-text">
+          <div class="menu-label">Teacher</div>
+          <div class="menu-desc">Grade, stavka va fix ma'lumotlari</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="kpi">
+        <div class="menu-icon">📊</div>
+        <div class="menu-text">
+          <div class="menu-label">KPI</div>
+          <div class="menu-desc">Scorecard tafsiloti va umumiy KPI foizi</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="salary">
+        <div class="menu-icon">💰</div>
+        <div class="menu-text">
+          <div class="menu-label">Ish haqi</div>
+          <div class="menu-desc">Fix, avans, KPI va bonus</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="tasks">
+        <div class="menu-icon">📋</div>
+        <div class="menu-text">
+          <div class="menu-label">Topshiriqlar</div>
+          <div class="menu-desc">Sizga yuborilgan va siz yuborgan topshiriqlar</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="rules">
+        <div class="menu-icon">📜</div>
+        <div class="menu-text">
+          <div class="menu-label">Asosiy qoidalar</div>
+          <div class="menu-desc">KPI qanday hisoblanishini bilib oling</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+    </div>
+  `;
+
+  appEl.querySelectorAll("[data-nav]").forEach((card) => {
+    card.addEventListener("click", () => renderTeacherSection(card.dataset.nav, me));
+  });
+}
+
+function renderTeacherSection(section, me) {
+  appEl.innerHTML = "";
+  appEl.appendChild(el(`<button class="back-btn" id="teacherBackBtn">← Orqaga</button>`));
+  const box = el(`<div id="teacherSectionContent"></div>`);
+  appEl.appendChild(box);
+
+  appEl.querySelector("#teacherBackBtn").addEventListener("click", () => renderTeacherHome(me));
+
+  if (section === "teacher") renderTeacherProfileSection(box);
+  else if (section === "kpi") renderTeacherKpiSection(box);
+  else if (section === "salary") renderTeacherSalarySection(box);
+  else if (section === "tasks") renderTasksTab(box, me);
+  else if (section === "rules") renderKpiRulesTab(box);
+}
+
+function _monthSelectHtml(id) {
+  return `
+    <div class="month-picker">
+      <label style="margin:0;">Oy:</label>
+      <select id="${id}">
+        ${lastNMonths(6).map((m) => `<option value="${m}">${m}</option>`).join("")}
+      </select>
+    </div>
+  `;
+}
+
+async function renderTeacherProfileSection(box) {
+  box.innerHTML = `
+    <h2>🧑‍🏫 Teacher</h2>
+    ${_monthSelectHtml("tpMonth")}
+    <div id="tpResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#tpMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#tpResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const p = await api("/api/me/profile");
+      resultBox.innerHTML = `
+        <div class="card">
+          <div class="row"><span class="label">Oy</span><span class="value">${select.value}</span></div>
+          <div class="row"><span class="label">Ism familiya</span><span class="value">${p.full_name}</span></div>
+          <div class="row"><span class="label">Grade</span><span class="value">${p.grade || "-"}</span></div>
+          <div class="row"><span class="label">Stavka</span><span class="value">${p.workload_rate}</span></div>
+        </div>
+        <div class="total-box">
+          <div class="caption">Fix summasi (stavkaga nisbatan)</div>
+          <div class="amount">${fmt(p.fix)}</div>
+        </div>
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+async function renderTeacherKpiSection(box) {
+  box.innerHTML = `
+    <h2>📊 KPI</h2>
+    ${_monthSelectHtml("tkMonth")}
+    <div id="tkResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#tkMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#tkResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/me/payroll?month=${select.value}`);
+
+      if (!d.kpi_available) {
+        resultBox.innerHTML = `
+          <div class="card">
+            <p style="color:var(--hint);font-size:13px;margin:0;">
+              📋 ${d.month} uchun hali Scorecard kiritilmagan. KPI ma'lumotlari kiritilgach shu yerda ko'rinadi.
+            </p>
+          </div>
+        `;
+        return;
+      }
+
+      const gateHtml = d.gate_notes.length
+        ? d.gate_notes.map((n) => `<div class="gate-warning">⚠️ ${n}</div>`).join("")
+        : "";
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${d.month} — Umumiy KPI foizi</div>
+          <div class="amount">${d.effective_kpi_percent}%</div>
+          <div style="font-size:12px;opacity:0.85;margin-top:4px;">Ball: ${d.kpi_percent}% (KPI fondidan)</div>
+        </div>
+        ${gateHtml}
+        <div class="card">
+          <div class="row"><span class="label">Retention (${d.raw_scores.retention ?? "-"}%)</span><span class="value">${d.breakdown.retention.toFixed(1)} / 25</span></div>
+          <div class="row"><span class="label">Student Progress (${d.raw_scores.progress ?? "-"}%)</span><span class="value">${d.breakdown.progress.toFixed(1)} / 25</span></div>
+          <div class="row"><span class="label">Attendance (${d.raw_scores.attendance ?? "-"}%)</span><span class="value">${d.breakdown.attendance.toFixed(1)} / 10</span></div>
+          <div class="row"><span class="label">Homework (${d.raw_scores.homework ?? "-"}%)</span><span class="value">${d.breakdown.homework.toFixed(1)} / 10</span></div>
+          <div class="row"><span class="label">Observation (${d.raw_scores.observation ?? "-"}/25)</span><span class="value">${d.breakdown.observation.toFixed(1)} / 15</span></div>
+          <div class="row"><span class="label">Student Feedback (${d.raw_scores.feedback ?? "-"}/10)</span><span class="value">${d.breakdown.feedback.toFixed(1)} / 10</span></div>
+          <div class="row"><span class="label">Platforma intizomi (${d.raw_scores.lms ?? "-"}/5)</span><span class="value">${d.breakdown.lms.toFixed(1)} / 5</span></div>
+        </div>
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+async function renderTeacherSalarySection(box) {
+  box.innerHTML = `
+    <h2>💰 Ish haqi</h2>
+    ${_monthSelectHtml("tsMonth")}
+    <div id="tsResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#tsMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#tsResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/me/payroll?month=${select.value}`);
+      const kpiNote = !d.kpi_available
+        ? `<p style="font-size:11px;color:var(--hint);margin:8px 0 0;">⚠️ Bu oy uchun hali Scorecard kiritilmagan, shuning uchun KPI summasi 0 deb hisoblangan — Scorecard kiritilgach yakuniy summa yangilanadi.</p>`
+        : "";
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${d.month} — Yakuniy hisob-kitob (Rashchyot)${d.is_settled ? " (to\'landi)" : ""}</div>
+          <div class="amount">${d.is_settled ? fmt(d.settled_amount) : fmt(d.rashchyot)}</div>
+        </div>
+        <div class="card">
+          <div class="row"><span class="label">Fix summa</span><span class="value">${fmt(d.fix)}</span></div>
+          <div class="row"><span class="label">Avans</span><span class="value" style="color:var(--red);">-${fmt(d.advance_given)}</span></div>
+          <div class="row"><span class="label">KPI summasi</span><span class="value">${d.kpi_available ? fmt(d.kpi_amount) : "—"}</span></div>
+          <div class="row"><span class="label">Bonus summasi</span><span class="value">${fmt(d.bonus)}</span></div>
+        </div>
+        ${kpiNote}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+// ============================================================
+// STAFF VIEW — Administrator / Sotuv menejeri kabi rollar uchun
+// (Teacher menyusiga o'xshash, lekin soddalashtirilgan: 7 mezonli scorecard o'rniga
+//  bitta umumiy samaradorlik foizi)
+// ============================================================
+
+const STAFF_ROLE_LABELS = {
+  Administrator: "Administrator",
+  SalesManager: "Sotuv menejeri",
+};
+
+function renderStaffView(me) {
+  renderStaffHome(me);
+}
+
+function renderStaffHome(me) {
+  const roleLabel = STAFF_ROLE_LABELS[me.role] || me.role;
+  const isSalesManager = me.role === "SalesManager";
+  const isAdministrator = me.role === "Administrator";
+  const hasDayTab = isSalesManager || isAdministrator;
+  appEl.innerHTML = `
+    <div class="teacher-hero">
+      <div class="teacher-avatar" style="background: linear-gradient(135deg, #607d8b, #37474f);">🧑‍💼</div>
+      <h1 style="margin-bottom:2px;">Salom, ${me.full_name} 👋</h1>
+      <div class="teacher-sub">${roleLabel}</div>
+    </div>
+    <div class="menu-grid">
+      ${hasDayTab ? `
+        <div class="menu-card" data-nav="day">
+          <div class="menu-icon">📅</div>
+          <div class="menu-text">
+            <div class="menu-label">Kun</div>
+            <div class="menu-desc">Kunlik ish vazifalarini kiritish</div>
+          </div>
+          <div class="menu-arrow">›</div>
+        </div>
+      ` : ""}
+      <div class="menu-card" data-nav="profile">
+        <div class="menu-icon">👤</div>
+        <div class="menu-text">
+          <div class="menu-label">Ma'lumotim</div>
+          <div class="menu-desc">Lavozim va oylik maosh</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="salary">
+        <div class="menu-icon">💰</div>
+        <div class="menu-text">
+          <div class="menu-label">Ish haqi</div>
+          <div class="menu-desc">Fix, avans, bonus va rashchyot</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="tasks">
+        <div class="menu-icon">📋</div>
+        <div class="menu-text">
+          <div class="menu-label">Topshiriqlar</div>
+          <div class="menu-desc">Sizga yuborilgan va siz yuborgan topshiriqlar</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      ${isSalesManager ? `
+        <div class="menu-card" data-nav="kpi">
+          <div class="menu-icon">🚀</div>
+          <div class="menu-text">
+            <div class="menu-label">KPI</div>
+            <div class="menu-desc">Natijalaringiz va bonusga yo'l xaritasi</div>
+          </div>
+          <div class="menu-arrow">›</div>
+        </div>
+      ` : ""}
+    </div>
+  `;
+
+  appEl.querySelectorAll("[data-nav]").forEach((card) => {
+    card.addEventListener("click", () => renderStaffSection(card.dataset.nav, me));
+  });
+}
+
+function renderStaffSection(section, me) {
+  appEl.innerHTML = "";
+  appEl.appendChild(el(`<button class="back-btn" id="staffBackBtn">← Orqaga</button>`));
+  const box = el(`<div id="staffSectionContent"></div>`);
+  appEl.appendChild(box);
+
+  appEl.querySelector("#staffBackBtn").addEventListener("click", () => renderStaffHome(me));
+
+  if (section === "profile") renderStaffProfileSection(box, me);
+  else if (section === "salary") renderStaffSalarySection(box, me);
+  else if (section === "kpi") renderSalesManagerOwnKpiTab(box, me);
+  else if (section === "tasks") renderTasksTab(box, me);
+  else if (section === "day") {
+    if (me.role === "SalesManager") renderSalesManagerDayTab(box, me);
+    else if (me.role === "Administrator") renderAdministratorDayTab(box, me);
+  }
+}
+
+async function renderStaffProfileSection(box, me) {
+  const roleLabel = STAFF_ROLE_LABELS[me.role] || me.role;
+  box.innerHTML = `
+    <h2>👤 Ma'lumotim</h2>
+    <div id="stpResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const resultBox = box.querySelector("#stpResult");
+  try {
+    const p = await api("/api/me/profile");
+    resultBox.innerHTML = `
+      <div class="card">
+        <div class="row"><span class="label">Ism familiya</span><span class="value">${p.full_name}</span></div>
+        <div class="row"><span class="label">Lavozim</span><span class="value">${roleLabel}</span></div>
+      </div>
+      <div class="total-box">
+        <div class="caption">Oylik maosh</div>
+        <div class="amount">${fmt(p.fix)}</div>
+      </div>
+    `;
+  } catch (err) {
+    resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+async function renderStaffSalarySection(box, me) {
+  box.innerHTML = `
+    <h2>💰 Ish haqi</h2>
+    ${_monthSelectHtml("stsMonth")}
+    <div id="stsResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#stsMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#stsResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/me/payroll?month=${select.value}`);
+      const isSalesManager = me && me.role === "SalesManager";
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${d.month} — Yakuniy hisob-kitob (Rashchyot)${d.is_settled ? " (to\'landi)" : ""}</div>
+          <div class="amount">${d.is_settled ? fmt(d.settled_amount) : fmt(d.rashchyot)}</div>
+        </div>
+        <div class="card">
+          <div class="row"><span class="label">Fix summa${isSalesManager ? " (kunlik ishlangan)" : ""}</span><span class="value">${fmt(d.fix)}</span></div>
+          <div class="row"><span class="label">Avans</span><span class="value" style="color:var(--red);">-${fmt(d.advance_given)}</span></div>
+          ${isSalesManager ? `<div class="row"><span class="label">KPI summasi</span><span class="value">${d.kpi_available ? fmt(d.kpi_amount) : "—"}</span></div>` : ""}
+          <div class="row"><span class="label">Bonus summasi</span><span class="value">${fmt(d.bonus)}</span></div>
+        </div>
+        ${isSalesManager && d.kpi_available ? _smKpiBreakdownHtml(d.breakdown) : ""}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+// ============================================================
+// SUBJECT TEACHER VIEW — Fan o'qituvchilari uchun (tushum ulushi asosida)
+// ============================================================
+
+function renderSubjectTeacherView(me) {
+  renderSubjectTeacherHome(me);
+}
+
+function renderSubjectTeacherHome(me) {
+  appEl.innerHTML = `
+    <div class="teacher-hero">
+      <div class="teacher-avatar" style="background: linear-gradient(135deg, #8e44ad, #5b2c6f);">📖</div>
+      <h1 style="margin-bottom:2px;">Salom, ${me.full_name} 👋</h1>
+      <div class="teacher-sub">${me.subject ? me.subject + " · " : ""}Fan o'qituvchisi</div>
+    </div>
+    <div class="menu-grid">
+      <div class="menu-card" data-nav="profile">
+        <div class="menu-icon">👤</div>
+        <div class="menu-text">
+          <div class="menu-label">Ma'lumotim</div>
+          <div class="menu-desc">Fan va tushumdan ulush foizi</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="salary">
+        <div class="menu-icon">💰</div>
+        <div class="menu-text">
+          <div class="menu-label">Ish haqi</div>
+          <div class="menu-desc">Tushum, ulush, avans va bonus</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="tasks">
+        <div class="menu-icon">📋</div>
+        <div class="menu-text">
+          <div class="menu-label">Topshiriqlar</div>
+          <div class="menu-desc">Sizga yuborilgan va siz yuborgan topshiriqlar</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+    </div>
+  `;
+
+  appEl.querySelectorAll("[data-nav]").forEach((card) => {
+    card.addEventListener("click", () => renderSubjectTeacherSection(card.dataset.nav, me));
+  });
+}
+
+function renderSubjectTeacherSection(section, me) {
+  appEl.innerHTML = "";
+  appEl.appendChild(el(`<button class="back-btn" id="stBackBtn">← Orqaga</button>`));
+  const box = el(`<div id="stSectionContent"></div>`);
+  appEl.appendChild(box);
+
+  appEl.querySelector("#stBackBtn").addEventListener("click", () => renderSubjectTeacherHome(me));
+
+  if (section === "profile") renderSubjectTeacherProfileSection(box);
+  else if (section === "salary") renderSubjectTeacherSalarySection(box);
+  else if (section === "tasks") renderTasksTab(box, me);
+}
+
+async function renderSubjectTeacherProfileSection(box) {
+  box.innerHTML = `
+    <h2>👤 Ma'lumotim</h2>
+    <div id="stpResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const resultBox = box.querySelector("#stpResult");
+  try {
+    const p = await api("/api/me/profile");
+    resultBox.innerHTML = `
+      <div class="card">
+        <div class="row"><span class="label">Ism familiya</span><span class="value">${p.full_name}</span></div>
+        <div class="row"><span class="label">Fan</span><span class="value">${p.subject || "-"}</span></div>
+        <div class="row"><span class="label">Tushumdan ulush</span><span class="value">${p.revenue_percent ?? "-"}%</span></div>
+      </div>
+    `;
+  } catch (err) {
+    resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+async function renderSubjectTeacherSalarySection(box) {
+  box.innerHTML = `
+    <h2>💰 Ish haqi</h2>
+    ${_monthSelectHtml("stSalaryMonth")}
+    <div id="stSalaryResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#stSalaryMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#stSalaryResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/me/payroll?month=${select.value}`);
+      const revenueNote = !d.kpi_available
+        ? `<p style="font-size:11px;color:var(--hint);margin:8px 0 0;">⚠️ ${d.month} uchun hali tushum kiritilmagan — kiritilgach ulush summasi hisoblanadi.</p>`
+        : "";
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${d.month} — Yakuniy hisob-kitob (Rashchyot)${d.is_settled ? " (to\'landi)" : ""}</div>
+          <div class="amount">${d.is_settled ? fmt(d.settled_amount) : fmt(d.rashchyot)}</div>
+        </div>
+        <div class="card">
+          <div class="row"><span class="label">Ulush foizi</span><span class="value">${d.revenue_percent ?? "-"}%</span></div>
+          <div class="row"><span class="label">Oylik tushum</span><span class="value">${d.revenue_amount !== null && d.revenue_amount !== undefined ? fmt(d.revenue_amount) : "—"}</span></div>
+          <div class="row"><span class="label">Ulush summasi</span><span class="value">${fmt(d.fix)}</span></div>
+          <div class="row"><span class="label">Avans</span><span class="value" style="color:var(--red);">-${fmt(d.advance_given)}</span></div>
+          <div class="row"><span class="label">Bonus summasi</span><span class="value">${fmt(d.bonus)}</span></div>
+        </div>
+        ${revenueNote}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+// ============================================================
+// SOTUV MENEJERI: KUN (kunlik ish vazifalari)
+// ============================================================
+
+function _todayDateStr() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+const SM_DAILY_FIELDS = [
+  { id: "repeat_calls_archive", label: "🔁 Kunlik Arxivdan qayta sotuv qo'ng'iroqlari" },
+  { id: "reinvite_count", label: "✉️ Re-invite soni" },
+  { id: "new_admissions", label: "🆕 Yangi qabul soni" },
+  { id: "trial_booked", label: "📝 Sinov darsiga yozilganlar soni" },
+  { id: "trial_attended", label: "🚶 Sinov darsiga kelganlar soni" },
+  { id: "activated_count", label: "⚡ Faollashtirilganlar soni" },
+  { id: "new_sales", label: "💼 Yangi sotuv soni" },
+  { id: "waiting_contact_count", label: "☎️ Kutishda turganlar bilan aloqa soni" },
+];
+
+// calc_sales_manager_daily formulasining frontend nusxasi (jonli oldindan ko'rish uchun)
+function _smScoreRepeatCallsPercent(count) {
+  const c = count || 0;
+  if (c >= 25) return 0.30;
+  if (c >= 20) return 0.25;
+  if (c >= 15) return 0.20;
+  if (c >= 10) return 0.10;
+  if (c >= 5) return 0.05;
+  return 0.0;
+}
+
+function _smCalcDaily(dayFix, repeatCalls, waitingContacted, maxWaiting, reinviteCount) {
+  const REINVITE_TARGET = 2.5;
+  const repeatPct = _smScoreRepeatCallsPercent(repeatCalls);
+  const repeatAmount = dayFix * repeatPct;
+
+  const wc = waitingContacted || 0;
+  let waitingPct;
+  if (maxWaiting > 0) waitingPct = Math.min(1, wc / maxWaiting);
+  else waitingPct = wc === 0 ? 1 : 0;
+  const waitingAmount = dayFix * 0.50 * waitingPct;
+
+  const ri = reinviteCount || 0;
+  const reinvitePct = Math.min(1, ri / REINVITE_TARGET);
+  const reinviteAmount = dayFix * 0.20 * reinvitePct;
+
+  return {
+    repeatAmount, waitingAmount, reinviteAmount,
+    total: repeatAmount + waitingAmount + reinviteAmount,
+    repeatPct: repeatPct * 100, waitingPct: waitingPct * 100, reinvitePct: reinvitePct * 100,
+  };
+}
+
+async function renderSalesManagerDayTab(box, me) {
+  const today = _todayDateStr();
+  box.innerHTML = `
+    <div class="card">
+      <label>Sana</label>
+      <input type="date" id="smDateInput" value="${today}" max="${today}" />
+    </div>
+    <div id="smDayContent"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const dateInput = box.querySelector("#smDateInput");
+  const contentBox = box.querySelector("#smDayContent");
+
+  dateInput.addEventListener("change", () => loadSalesManagerDay(contentBox, me, dateInput.value));
+  await loadSalesManagerDay(contentBox, me, today);
+}
+
+async function loadSalesManagerDay(box, me, selectedDate) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+
+  try {
+    const res = await api(`/api/sales-manager-daily/me?date=${selectedDate}`);
+    const data = res.data || {};
+    const status = data.status || null;
+    const isLocked = status === "pending" || status === "approved";
+    const isToday = selectedDate === _todayDateStr();
+
+    const fieldsHtml = SM_DAILY_FIELDS.map((f) => `
+      <div class="sc-field">
+        <label>${f.label}</label>
+        <input id="sm_${f.id}" type="number" step="1" min="0" value="${data[f.id] ?? ""}" ${isLocked ? "disabled" : ""} />
+      </div>
+    `).join("");
+
+    let statusBannerHtml = "";
+    if (status === "pending") {
+      statusBannerHtml = `
+        <div class="sm-status-banner sm-status-pending">
+          <span class="sm-status-spinner"></span>
+          <span>Jarayonda — Direktor tomonidan ko'rib chiqilmoqda</span>
+        </div>`;
+    } else if (status === "approved") {
+      statusBannerHtml = `
+        <div class="sm-status-banner sm-status-approved">
+          <span>✅ Tasdiqlandi</span>
+        </div>`;
+    } else if (status === "rejected") {
+      statusBannerHtml = `
+        <div class="sm-status-banner sm-status-rejected">
+          <span>❌ Otkaz qilindi${data.rejection_note ? ": " + data.rejection_note : ""} — ma'lumotlarni tahrirlab qayta yuboring</span>
+        </div>`;
+    }
+
+    box.innerHTML = `
+      <h2>📅 ${selectedDate}</h2>
+
+      ${isToday ? `
+        <div class="sm-reminder-card">
+          <div class="sm-reminder-title">👋 Hurmatli ${me.full_name.split(" ")[0]}, bugungi ishlar:</div>
+          <div class="sm-reminder-item">1. Kunlik Arxivdan qayta sotuv qo'ng'iroqlari — <b>${res.targets.repeat_calls_archive}</b></div>
+          <div class="sm-reminder-item">2. Kutishda turganlar bilan aloqa soni — <b>${res.targets.waiting_contact_count}</b></div>
+          <div class="sm-reminder-item">3. Re-invite — <b>${Math.floor(res.targets.reinvite_count)}</b></div>
+          <div class="sm-reminder-item">4. Kunlik ma'lumotlarni to'ldirish</div>
+        </div>
+      ` : `
+        <p style="font-size:12px;color:var(--hint);">O'tgan kun uchun majburiyatlar: qo'ng'iroqlar — <b>${res.targets.repeat_calls_archive}</b>, kutishdagilar — <b>${res.targets.waiting_contact_count}</b>, re-invite — <b>${Math.floor(res.targets.reinvite_count)}</b></p>
+      `}
+
+      <p style="font-size:11px;color:var(--hint);margin:-4px 0 10px;">
+        💡 Bu ma'lumotlar KPI (bonus)ingizga oy oxirida avtomatik hisobga olinadi — batafsilini Scorecard bo'limidan ko'rishingiz mumkin.
+      </p>
+
+      ${statusBannerHtml}
+
+      <div class="card sc-form">
+        ${fieldsHtml}
+      </div>
+
+      ${!isLocked ? `
+        <button class="primary" id="smSaveBtn">💾 Saqlash</button>
+        <button class="secondary" id="smSubmitBtn">📤 Yuborish</button>
+        <div id="smMsg" style="margin-top:8px;font-size:13px;"></div>
+      ` : ""}
+    `;
+
+    if (!isLocked) {
+      box.querySelector("#smSaveBtn").addEventListener("click", async () => {
+        const msg = box.querySelector("#smMsg");
+        msg.textContent = "Saqlanmoqda...";
+        try {
+          const body = { date: selectedDate };
+          SM_DAILY_FIELDS.forEach((f) => {
+            const v = parseFloat(box.querySelector(`#sm_${f.id}`).value);
+            body[f.id] = isNaN(v) ? null : v;
+          });
+          await api("/api/sales-manager-daily/me", { method: "POST", body: JSON.stringify(body) });
+          msg.innerHTML = `<span class="badge ok">✅ Saqlandi (qoralama)</span>`;
+        } catch (err) {
+          msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+        }
+      });
+
+      box.querySelector("#smSubmitBtn").addEventListener("click", () => {
+        showConfirm(
+          "Ma'lumotlarni yuborish",
+          `<b>${selectedDate}</b> kuni uchun ma'lumotlar Direktorga ko'rib chiqish uchun yuborilsinmi? Yuborilgandan so'ng Direktor tasdiqlamaguncha tahrirlab bo'lmaydi.`,
+          async () => {
+            const msg = box.querySelector("#smMsg");
+            msg.textContent = "Yuborilmoqda...";
+            try {
+              const body = { date: selectedDate };
+              SM_DAILY_FIELDS.forEach((f) => {
+                const v = parseFloat(box.querySelector(`#sm_${f.id}`).value);
+                body[f.id] = isNaN(v) ? null : v;
+              });
+              await api("/api/sales-manager-daily/me", { method: "POST", body: JSON.stringify(body) });
+              await api("/api/sales-manager-daily/me/submit", { method: "POST", body: JSON.stringify({ date: selectedDate }) });
+              loadSalesManagerDay(box, me, selectedDate);
+            } catch (err) {
+              msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+            }
+          }
+        );
+      });
+    }
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+// ============================================================
+// ADMINISTRATOR: KUN (kunlik ish vazifalari)
+// ============================================================
+
+const CHURN_REASON_OPTIONS = ["Narx", "Sifat", "Jadval mos kelmasligi", "Ko'chib ketish", "Boshqa"];
+
+const ADMIN_DAILY_FIELDS = [
+  { id: "admin_contacted_clients", label: "📞 Mijozlar bilan bog'lanish soni", type: "number" },
+  { id: "risky_contacted_count", label: "☎️ Xavfli o'quvchilar bilan aloqa soni", type: "number" },
+  { id: "frozen_count", label: "🧊 Muzlatilgan o'quvchilar soni", type: "number" },
+  { id: "frozen_reason", label: "🧊 Muzlatish sababi (agar bo'lsa)", type: "select" },
+  { id: "left_count", label: "🚪 Chiqib ketgan o'quvchilar soni", type: "number" },
+  { id: "left_reason", label: "🚪 Chiqib ketish sababi (agar bo'lsa)", type: "select" },
+  { id: "complaints_count", label: "😠 Mijoz shikoyatlari soni", type: "number" },
+];
+
+async function renderAdministratorDayTab(box, me) {
+  const today = _todayDateStr();
+  box.innerHTML = `
+    <div class="card">
+      <label>Sana</label>
+      <input type="date" id="admDateInput" value="${today}" max="${today}" />
+    </div>
+    <div id="admDayContent"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const dateInput = box.querySelector("#admDateInput");
+  const contentBox = box.querySelector("#admDayContent");
+
+  dateInput.addEventListener("change", () => loadAdministratorDay(contentBox, me, dateInput.value));
+  await loadAdministratorDay(contentBox, me, today);
+}
+
+async function loadAdministratorDay(box, me, selectedDate) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+
+  try {
+    const res = await api(`/api/administrator-daily/me?date=${selectedDate}`);
+    const data = res.data || {};
+    const status = data.status || null;
+    const isLocked = status === "pending" || status === "approved";
+
+    const fieldsHtml = ADMIN_DAILY_FIELDS.map((f) => {
+      if (f.type === "select") {
+        return `
+          <div class="sc-field">
+            <label>${f.label}</label>
+            <select id="adm_${f.id}" ${isLocked ? "disabled" : ""}>
+              <option value="">-</option>
+              ${CHURN_REASON_OPTIONS.map((opt) => `<option value="${opt}" ${data[f.id] === opt ? "selected" : ""}>${opt}</option>`).join("")}
+            </select>
+          </div>
+        `;
+      }
+      return `
+        <div class="sc-field">
+          <label>${f.label}</label>
+          <input id="adm_${f.id}" type="number" step="1" min="0" value="${data[f.id] ?? ""}" ${isLocked ? "disabled" : ""} />
+        </div>
+      `;
+    }).join("");
+
+    let statusBannerHtml = "";
+    if (status === "pending") {
+      statusBannerHtml = `
+        <div class="sm-status-banner sm-status-pending">
+          <span class="sm-status-spinner"></span>
+          <span>Jarayonda — Direktor tomonidan ko'rib chiqilmoqda</span>
+        </div>`;
+    } else if (status === "approved") {
+      statusBannerHtml = `<div class="sm-status-banner sm-status-approved"><span>✅ Tasdiqlandi</span></div>`;
+    } else if (status === "rejected") {
+      statusBannerHtml = `
+        <div class="sm-status-banner sm-status-rejected">
+          <span>❌ Otkaz qilindi${data.rejection_note ? ": " + data.rejection_note : ""} — ma'lumotlarni tahrirlab qayta yuboring</span>
+        </div>`;
+    }
+
+    box.innerHTML = `
+      <h2>📅 ${selectedDate}</h2>
+      ${statusBannerHtml}
+      <div class="card sc-form">${fieldsHtml}</div>
+      ${!isLocked ? `
+        <button class="primary" id="admSaveBtn">💾 Saqlash</button>
+        <button class="secondary" id="admSubmitBtn">📤 Yuborish</button>
+        <div id="admMsg" style="margin-top:8px;font-size:13px;"></div>
+      ` : ""}
+    `;
+
+    if (!isLocked) {
+      function collectBody() {
+        const body = { date: selectedDate };
+        ADMIN_DAILY_FIELDS.forEach((f) => {
+          const el = box.querySelector(`#adm_${f.id}`);
+          if (f.type === "select") {
+            body[f.id] = el.value || null;
+          } else {
+            const v = parseFloat(el.value);
+            body[f.id] = isNaN(v) ? null : v;
+          }
+        });
+        return body;
+      }
+
+      box.querySelector("#admSaveBtn").addEventListener("click", async () => {
+        const msg = box.querySelector("#admMsg");
+        msg.textContent = "Saqlanmoqda...";
+        try {
+          await api("/api/administrator-daily/me", { method: "POST", body: JSON.stringify(collectBody()) });
+          msg.innerHTML = `<span class="badge ok">✅ Saqlandi (qoralama)</span>`;
+        } catch (err) {
+          msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+        }
+      });
+
+      box.querySelector("#admSubmitBtn").addEventListener("click", () => {
+        showConfirm(
+          "Ma'lumotlarni yuborish",
+          `<b>${selectedDate}</b> kuni uchun ma'lumotlar Direktorga ko'rib chiqish uchun yuborilsinmi?`,
+          async () => {
+            const msg = box.querySelector("#admMsg");
+            msg.textContent = "Yuborilmoqda...";
+            try {
+              await api("/api/administrator-daily/me", { method: "POST", body: JSON.stringify(collectBody()) });
+              await api("/api/administrator-daily/me/submit", { method: "POST", body: JSON.stringify({ date: selectedDate }) });
+              loadAdministratorDay(box, me, selectedDate);
+            } catch (err) {
+              msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+            }
+          }
+        );
+      });
+    }
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+// ============================================================
+// EDU MANAGER: KUN (kunlik ish vazifalari)
+// ============================================================
+
+const EDU_DAILY_FIELDS = [
+  { id: "start_active", label: "🌅 Kun boshidagi faol o'quvchilar soni" },
+  { id: "end_active", label: "🌇 Kun oxiridagi faol o'quvchilar soni" },
+  { id: "attendance_percent", label: "📅 Davomat foizi (%)" },
+  { id: "risky_count", label: "⚠️ Xavfli o'quvchilar soni" },
+];
+
+async function renderEduManagerDayTab(box, me) {
+  const today = _todayDateStr();
+  box.innerHTML = `
+    <div class="card">
+      <label>Sana</label>
+      <input type="date" id="eduDateInput" value="${today}" max="${today}" />
+    </div>
+    <div id="eduDayContent"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const dateInput = box.querySelector("#eduDateInput");
+  const contentBox = box.querySelector("#eduDayContent");
+
+  dateInput.addEventListener("change", () => loadEduManagerDay(contentBox, me, dateInput.value));
+  await loadEduManagerDay(contentBox, me, today);
+}
+
+async function loadEduManagerDay(box, me, selectedDate) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+
+  try {
+    const res = await api(`/api/edu-manager-daily/me?date=${selectedDate}`);
+    const data = res.data || {};
+    const status = data.status || null;
+    const isLocked = status === "pending" || status === "approved";
+
+    const fieldsHtml = EDU_DAILY_FIELDS.map((f) => `
+      <div class="sc-field">
+        <label>${f.label}</label>
+        <input id="edu_${f.id}" type="number" step="${f.id === "attendance_percent" ? "0.1" : "1"}" min="0" value="${data[f.id] ?? ""}" ${isLocked ? "disabled" : ""} />
+      </div>
+    `).join("");
+
+    let statusBannerHtml = "";
+    if (status === "pending") {
+      statusBannerHtml = `
+        <div class="sm-status-banner sm-status-pending">
+          <span class="sm-status-spinner"></span>
+          <span>Jarayonda — Direktor tomonidan ko'rib chiqilmoqda</span>
+        </div>`;
+    } else if (status === "approved") {
+      statusBannerHtml = `<div class="sm-status-banner sm-status-approved"><span>✅ Tasdiqlandi</span></div>`;
+    } else if (status === "rejected") {
+      statusBannerHtml = `
+        <div class="sm-status-banner sm-status-rejected">
+          <span>❌ Otkaz qilindi${data.rejection_note ? ": " + data.rejection_note : ""} — ma'lumotlarni tahrirlab qayta yuboring</span>
+        </div>`;
+    }
+
+    box.innerHTML = `
+      <h2>📅 ${selectedDate}</h2>
+      ${statusBannerHtml}
+      <div class="card sc-form">${fieldsHtml}</div>
+      ${!isLocked ? `
+        <button class="primary" id="eduSaveBtn">💾 Saqlash</button>
+        <button class="secondary" id="eduSubmitBtn">📤 Yuborish</button>
+        <div id="eduDayMsg" style="margin-top:8px;font-size:13px;"></div>
+      ` : ""}
+    `;
+
+    if (!isLocked) {
+      function collectBody() {
+        const body = { date: selectedDate };
+        EDU_DAILY_FIELDS.forEach((f) => {
+          const v = parseFloat(box.querySelector(`#edu_${f.id}`).value);
+          body[f.id] = isNaN(v) ? null : v;
+        });
+        return body;
+      }
+
+      box.querySelector("#eduSaveBtn").addEventListener("click", async () => {
+        const msg = box.querySelector("#eduDayMsg");
+        msg.textContent = "Saqlanmoqda...";
+        try {
+          await api("/api/edu-manager-daily/me", { method: "POST", body: JSON.stringify(collectBody()) });
+          msg.innerHTML = `<span class="badge ok">✅ Saqlandi (qoralama)</span>`;
+        } catch (err) {
+          msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+        }
+      });
+
+      box.querySelector("#eduSubmitBtn").addEventListener("click", () => {
+        showConfirm(
+          "Ma'lumotlarni yuborish",
+          `<b>${selectedDate}</b> kuni uchun ma'lumotlar Direktorga ko'rib chiqish uchun yuborilsinmi?`,
+          async () => {
+            const msg = box.querySelector("#eduDayMsg");
+            msg.textContent = "Yuborilmoqda...";
+            try {
+              await api("/api/edu-manager-daily/me", { method: "POST", body: JSON.stringify(collectBody()) });
+              await api("/api/edu-manager-daily/me/submit", { method: "POST", body: JSON.stringify({ date: selectedDate }) });
+              loadEduManagerDay(box, me, selectedDate);
+            } catch (err) {
+              msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+            }
+          }
+        );
+      });
+    }
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+// ============================================================
+// ADMIN VIEW
+// ============================================================
+
+const ADMIN_TABS = [
+  { id: "dashboard", icon: "📊", label: "Dashboard", desc: "Xarajat, KPI reytingi va kompaniya ko'rsatkichlari" },
+  { id: "company", icon: "🏢", label: "Kompaniya", desc: "Kunlik ko'rsatkichlar va xodimlar tasdiqlashi" },
+  { id: "moliya", icon: "💰", label: "Moliya", desc: "Ish haqi, tushum va kompaniya moliyasi" },
+  { id: "scorecard", icon: "✏️", label: "Scorecard", desc: "Xodimlarni KPI bo'yicha baholash" },
+  { id: "employees", icon: "👥", label: "Xodimlar", desc: "Xodimlarni qo'shish va boshqarish" },
+  { id: "reports", icon: "📑", label: "Hisobotlar", desc: "O'qituvchi, Scorecard va Kompaniya hisobotlari" },
+  { id: "tasks", icon: "📋", label: "Topshiriqlar", desc: "Xodimlar orasidagi buyruq va xabarlar" },
+  { id: "rules", icon: "📜", label: "Asosiy qoidalar", desc: "Teacher va Edu Manager KPI qanday hisoblanadi" },
+  { id: "settings", icon: "⚙️", label: "Sozlamalar", desc: "Grade narxlari, foizlar va sinov rejimi" },
+];
+
+function _roleHeroConfig(role) {
+  if (role === "CEO") {
+    return { icon: "👑", gradient: "linear-gradient(135deg, #f5a623, #c77800)", label: "Bosh direktor" };
+  }
+  if (role === "Director") {
+    return { icon: "🏛️", gradient: "linear-gradient(135deg, #17a589, #0e6655)", label: "Direktor" };
+  }
+  return { icon: "🧑‍💼", gradient: "linear-gradient(135deg, var(--button), #1a5f9e)", label: role };
+}
+
+function renderAdminView(me) {
+  if (me.role === "EduManager") {
+    renderEduManagerView(me);
+    return;
+  }
+  renderAdminHome(me);
+}
+
+function renderAdminHome(me) {
+  const hero = _roleHeroConfig(me.role);
+
+  // Sozlamalar bo'limi faqat CEO uchun ko'rinadi — Direktor kompaniya ma'lumotlarining
+  // barchasini ko'radi va boshqaradi, lekin tizim sozlamalarini (grade narxlari, foizlar) o'zgartira olmaydi.
+  const tabsToShow = me.role === "CEO" ? ADMIN_TABS : ADMIN_TABS.filter((t) => t.id !== "settings");
+
+  appEl.innerHTML = `
+    <div class="teacher-hero">
+      <div class="teacher-avatar" style="background:${hero.gradient};">${hero.icon}</div>
+      <h1 style="margin-bottom:2px;">${me.full_name}</h1>
+      <div class="teacher-sub">${hero.label}</div>
+    </div>
+    <div class="menu-grid">
+      ${tabsToShow.map((t) => `
+        <div class="menu-card" data-nav="${t.id}">
+          <div class="menu-icon">${t.icon}</div>
+          <div class="menu-text">
+            <div class="menu-label">${t.label}</div>
+            <div class="menu-desc">${t.desc}</div>
+          </div>
+          <div class="menu-arrow">›</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  appEl.querySelectorAll("[data-nav]").forEach((card) => {
+    card.addEventListener("click", () => renderAdminSection(card.dataset.nav, me));
+  });
+}
+
+function renderAdminSection(tabId, me) {
+  const tabInfo = ADMIN_TABS.find((t) => t.id === tabId);
+  appEl.innerHTML = "";
+  appEl.appendChild(el(`<button class="back-btn" id="adminBackBtn">← Orqaga</button>`));
+  if (tabInfo) {
+    appEl.appendChild(el(`<h1 style="margin:4px 0 14px;">${tabInfo.icon} ${tabInfo.label}</h1>`));
+  }
+  const contentEl = el(`<div id="adminContent"></div>`);
+  appEl.appendChild(contentEl);
+
+  appEl.querySelector("#adminBackBtn").addEventListener("click", () => renderAdminHome(me));
+
+  renderAdminTab(tabId, contentEl, me);
+}
+
+async function renderAdminTab(tab, box, me) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  try {
+    if (tab === "dashboard") await renderDashboardTab(box);
+    else if (tab === "company") await renderCompanyTab(box);
+    else if (tab === "moliya") await renderMoliyaTab(box);
+    else if (tab === "scorecard") await renderScorecardTab(box, me);
+    else if (tab === "employees") await renderEmployeesTab(box, me);
+    else if (tab === "reports") await renderReportsTab(box);
+    else if (tab === "tasks") await renderTasksTab(box, me);
+    else if (tab === "rules") await renderKpiRulesTab(box);
+    else if (tab === "settings") await renderSettingsTab(box);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+// ============================================================
+// EDU MANAGER VIEW — moliyaviy ma'lumotlarsiz, faqat KPI/o'quv jarayoni
+// ============================================================
+
+const EDU_TABS = [
+  { id: "day", icon: "📅", label: "Kun", desc: "Kunlik ish vazifalarini kiritish" },
+  { id: "teachers", icon: "👨‍🏫", label: "O'qituvchilar", desc: "O'qituvchilar ro'yxati va ma'lumotlari" },
+  { id: "kpi", icon: "📊", label: "KPI", desc: "O'qituvchilar reytingi (yashil/sariq/qizil)" },
+  { id: "scorecard", icon: "✏️", label: "Scorecard", desc: "O'qituvchilarni oylik baholash" },
+  { id: "reports", icon: "📑", label: "Hisobotlar", desc: "KPI xulosasi (moliyaviy ma'lumotsiz)" },
+  { id: "myPay", icon: "💰", label: "Mening ish haqim", desc: "Fix, KPI va bonus" },
+  { id: "tasks", icon: "📋", label: "Topshiriqlar", desc: "Kelgan va yuborilgan topshiriqlar" },
+  { id: "rules", icon: "📜", label: "Asosiy qoidalar", desc: "KPI qanday hisoblanishini bilib oling" },
+];
+
+function renderEduManagerView(me) {
+  renderEduManagerHome(me);
+}
+
+function renderEduManagerHome(me) {
+  appEl.innerHTML = `
+    <div class="teacher-hero">
+      <div class="teacher-avatar" style="background: linear-gradient(135deg, #7c5cff, #4b2ee0);">🎓</div>
+      <h1 style="margin-bottom:2px;">${me.full_name}</h1>
+      <div class="teacher-sub">Ta'lim menejeri</div>
+    </div>
+    <div class="menu-grid">
+      ${EDU_TABS.map((t) => `
+        <div class="menu-card" data-nav="${t.id}">
+          <div class="menu-icon">${t.icon}</div>
+          <div class="menu-text">
+            <div class="menu-label">${t.label}</div>
+            <div class="menu-desc">${t.desc}</div>
+          </div>
+          <div class="menu-arrow">›</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  appEl.querySelectorAll("[data-nav]").forEach((card) => {
+    card.addEventListener("click", () => renderEduManagerSection(card.dataset.nav, me));
+  });
+}
+
+function renderEduManagerSection(tabId, me) {
+  const tabInfo = EDU_TABS.find((t) => t.id === tabId);
+  appEl.innerHTML = "";
+  appEl.appendChild(el(`<button class="back-btn" id="eduBackBtn">← Orqaga</button>`));
+  if (tabInfo) {
+    appEl.appendChild(el(`<h1 style="margin:4px 0 14px;">${tabInfo.icon} ${tabInfo.label}</h1>`));
+  }
+  const contentEl = el(`<div id="eduContent"></div>`);
+  appEl.appendChild(contentEl);
+
+  appEl.querySelector("#eduBackBtn").addEventListener("click", () => renderEduManagerHome(me));
+
+  renderEduTab(tabId, contentEl, me);
+}
+
+async function renderEduTab(tab, box, me) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  try {
+    if (tab === "teachers") await renderEduTeachersTab(box);
+    else if (tab === "kpi") await renderEduKpiTab(box);
+    else if (tab === "scorecard") await renderScorecardTab(box, me);
+    else if (tab === "reports") await renderEduReportsTab(box);
+    else if (tab === "myPay") await renderEduMyPayTab(box);
+    else if (tab === "day") await renderEduManagerDayTab(box, me);
+    else if (tab === "tasks") await renderTasksTab(box, me);
+    else if (tab === "rules") await renderKpiRulesTab(box);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+async function renderEduMyPayTab(box) {
+  box.innerHTML = `
+    ${_monthSelectHtml("emMyMonth")}
+    <div id="emMyResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#emMyMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#emMyResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/me/payroll?month=${select.value}`);
+
+      const gateHtml = d.gate_notes && d.gate_notes.length
+        ? d.gate_notes.map((n) => `<div class="gate-warning">⚠️ ${n}</div>`).join("")
+        : "";
+
+      let breakdownHtml = "";
+      if (d.kpi_available && d.breakdown) {
+        breakdownHtml = `
+          <h2>📊 KPI mezonlari</h2>
+          <div class="card">
+            <div class="row"><span class="label">🔁 Retention</span><span class="value">${Math.round(d.breakdown.retention * 100)}%</span></div>
+            <div class="row"><span class="label">👨‍🏫 Teacher Performance</span><span class="value">${Math.round(d.breakdown.teacher_performance * 100)}%</span></div>
+            <div class="row"><span class="label">📈 Student Results</span><span class="value">${Math.round(d.breakdown.student_results * 100)}%</span></div>
+            <div class="row"><span class="label">🗓️ Attendance</span><span class="value">${Math.round(d.breakdown.attendance * 100)}%</span></div>
+            <div class="row"><span class="label">📝 Homework</span><span class="value">${Math.round(d.breakdown.homework * 100)}%</span></div>
+            <div class="row"><span class="label">🏫 Group Occupancy</span><span class="value">${Math.round(d.breakdown.occupancy * 100)}%</span></div>
+          </div>
+        `;
+      } else if (!d.kpi_available) {
+        breakdownHtml = `<p style="font-size:12px;color:var(--hint);">📋 ${d.month} uchun hali KPI kiritilmagan.</p>`;
+      }
+
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${d.month} — Yakuniy hisob-kitob (Rashchyot)${d.is_settled ? " (to\'landi)" : ""}</div>
+          <div class="amount">${d.is_settled ? fmt(d.settled_amount) : fmt(d.rashchyot)}</div>
+        </div>
+        ${gateHtml}
+        <div class="card">
+          <div class="row"><span class="label">Oylik maosh (Fix)</span><span class="value">${fmt(d.fix)}</span></div>
+          <div class="row"><span class="label">Avans</span><span class="value" style="color:var(--red);">-${fmt(d.advance_given)}</span></div>
+          <div class="row"><span class="label">Umumiy KPI foizi</span><span class="value">${d.kpi_available ? d.effective_kpi_percent + "%" : "—"}</span></div>
+          <div class="row"><span class="label">KPI summasi</span><span class="value">${d.kpi_available ? fmt(d.kpi_amount) : "—"}</span></div>
+          <div class="row"><span class="label">Bonus summasi</span><span class="value">${fmt(d.bonus)}</span></div>
+        </div>
+        ${breakdownHtml}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+// ============================================================
+// TOPSHIRIQLAR (universal — barcha rollar uchun bitta komponent)
+// ============================================================
+
+const ROLE_LABELS_UZ_JS = {
+  CEO: "CEO",
+  Director: "Direktor",
+  EduManager: "Ta'lim menejeri",
+  Teacher: "O'qituvchi",
+  SubjectTeacher: "Fan o'qituvchisi",
+  Administrator: "Administrator",
+  SalesManager: "Sotuv menejeri",
+};
+
+const STUDENT_PROBLEM_STATUSES = [
+  "Muzlatildi", "Chiqib ketdi", "Darsga kelmadi", "Davomat qilinmadi",
+  "Baholanmadi", "Qarzdor", "Yangi talaba qo'shildi", "Imtixon olinmadi", "Natijasi past",
+];
+
+function _studentTaskTextTemplate(status, name, group, phone) {
+  const who = name || "O'quvchi";
+  const grp = group ? ` (${group} guruhi)` : "";
+  const tel = phone ? ` Tel: ${phone}` : "";
+  const templates = {
+    "Muzlatildi": `${who}${grp} muzlatildi.${tel}`,
+    "Chiqib ketdi": `${who}${grp} chiqib ketdi.${tel}`,
+    "Darsga kelmadi": `${who}${grp} darsga kelmadi.${tel}`,
+    "Davomat qilinmadi": `${who}${grp} uchun davomat qilinmadi.${tel}`,
+    "Baholanmadi": `${who}${grp} baholanmadi.${tel}`,
+    "Qarzdor": `${who}${grp} qarzdor.${tel}`,
+    "Yangi talaba qo'shildi": `${who}${grp}ga yangi talaba sifatida qo'shildi.${tel}`,
+    "Imtixon olinmadi": `${who}${grp}dan imtixon olinmadi.${tel}`,
+    "Natijasi past": `${who}${grp}ning natijasi past.${tel}`,
+  };
+  return templates[status] || "";
+}
+
+const TASK_STATUS_LABELS = {
+  new: { label: "🆕 Yangi", cls: "task-status-new" },
+  in_progress: { label: "🔄 Jarayonda", cls: "task-status-seen" },
+  done: { label: "✅ Bajarildi", cls: "task-status-done" },
+};
+
+function _formatTaskTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString("uz-UZ", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+async function loadMySummary(box) {
+  try {
+    const now = new Date();
+    const start = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const end = _todayDateStr();
+    const s = await api(`/api/tasks/my-summary?start=${start}&end=${end}`);
+
+    if (s.total === 0) {
+      box.innerHTML = "";
+      return;
+    }
+
+    const completionRate = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
+    const rateColor = completionRate >= 80 ? "var(--green)" : completionRate >= 50 ? "#e8a33d" : "var(--red)";
+
+    const overdueHtml = s.overdue_count > 0
+      ? `
+        <div class="task-my-penalty-alert">
+          ⚠️ Sizda <b>${s.overdue_count} ta</b> muddati o'tgan topshiriq bor — jami jarima: <b>${fmt(s.total_penalty)}</b>
+        </div>
+      `
+      : s.total_penalty === 0 && s.penalty_rate > 0
+        ? `<div class="task-my-penalty-ok">🎉 Ajoyib! Bu oy hech qanday muddati o'tgan topshirig'ingiz yo'q</div>`
+        : "";
+
+    box.innerHTML = `
+      <div class="task-my-stats-card">
+        <div class="task-my-stats-head">
+          <span>📊 Shu oydagi natijangiz</span>
+          <span class="task-my-stats-rate" style="color:${rateColor};">${completionRate}%</span>
+        </div>
+        <div class="task-my-stats-row">
+          <span>🆕 ${s.not_done}</span>
+          <span>🔄 ${s.in_progress}</span>
+          <span>✅ ${s.done}</span>
+          <span>📋 Jami: ${s.total}</span>
+        </div>
+        ${overdueHtml}
+      </div>
+    `;
+  } catch (err) {
+    box.innerHTML = "";
+  }
+}
+
+async function renderTasksTab(box, me) {
+  const isOwner = me.role === "CEO" || me.role === "Director";
+
+  box.innerHTML = `
+    <div id="taskMySummaryWrap"><div class="center-box"><div class="spinner"></div></div></div>
+    <div class="tabs" id="taskSubTabs">
+      <div class="tab active" data-subtab="inbox">📥 Menga kelgan</div>
+      <div class="tab" data-subtab="sent">📤 Men yuborgan</div>
+      ${isOwner ? `<div class="tab" data-subtab="all">🗂️ Barchasi</div>` : ""}
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="primary" id="newTaskBtn" style="flex:1;">+ Yangi topshiriq</button>
+      <button class="secondary" id="toggleFilterBtn" style="flex:0 0 auto;width:auto;padding:0 16px;">🔍 Filtr</button>
+    </div>
+    <div id="taskFilterWrap" style="display:none;"></div>
+    <div id="taskFormWrap"></div>
+    <div id="taskListWrap"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  loadMySummary(box.querySelector("#taskMySummaryWrap"));
+
+  let currentSubtab = "inbox";
+  let filters = { sender: "all", status: "all" };
+  const listWrap = box.querySelector("#taskListWrap");
+  const formWrap = box.querySelector("#taskFormWrap");
+  const filterWrap = box.querySelector("#taskFilterWrap");
+
+  function renderFilterUI(tasks) {
+    const senders = [...new Map(tasks.map((t) => [t.from_teacher_id, t.from_full_name])).entries()];
+    filterWrap.innerHTML = `
+      <div class="card" style="margin-top:0;">
+        <label>Kim yubordi</label>
+        <select id="filterSender">
+          <option value="all">Barchasi</option>
+          ${senders.map(([id, name]) => `<option value="${id}" ${filters.sender === id ? "selected" : ""}>${name}</option>`).join("")}
+        </select>
+        <label>Holat</label>
+        <select id="filterStatus">
+          <option value="all" ${filters.status === "all" ? "selected" : ""}>Barchasi</option>
+          <option value="new" ${filters.status === "new" ? "selected" : ""}>🆕 Yangi</option>
+          <option value="in_progress" ${filters.status === "in_progress" ? "selected" : ""}>🔄 Jarayonda</option>
+          <option value="done" ${filters.status === "done" ? "selected" : ""}>✅ Bajarilgan</option>
+          <option value="overdue" ${filters.status === "overdue" ? "selected" : ""}>⏰ Muddati o'tgan</option>
+        </select>
+      </div>
+    `;
+    filterWrap.querySelector("#filterSender").addEventListener("change", (e) => {
+      filters.sender = e.target.value;
+      renderList(tasks);
+    });
+    filterWrap.querySelector("#filterStatus").addEventListener("change", (e) => {
+      filters.status = e.target.value;
+      renderList(tasks);
+    });
+  }
+
+  box.querySelector("#toggleFilterBtn").addEventListener("click", () => {
+    filterWrap.style.display = filterWrap.style.display === "none" ? "block" : "none";
+  });
+
+  function applyFilters(tasks) {
+    return tasks.filter((t) => {
+      if (filters.sender !== "all" && t.from_teacher_id !== filters.sender) return false;
+      if (filters.status === "overdue" && !t.is_overdue) return false;
+      if (filters.status !== "all" && filters.status !== "overdue" && t.status !== filters.status) return false;
+      return true;
+    });
+  }
+
+  function renderList(allTasks) {
+    const tasks = applyFilters(allTasks);
+
+    if (!tasks.length) {
+      listWrap.innerHTML = `<p style="color:var(--hint);font-size:13px;text-align:center;padding:20px 0;">Hozircha topshiriq yo'q</p>`;
+      return;
+    }
+
+    listWrap.innerHTML = tasks.map((t) => {
+      const statusInfo = TASK_STATUS_LABELS[t.status];
+      const isRecipient = t.to_teacher_id === me.teacher_id || (!t.to_teacher_id && t.to_role === me.role);
+      const canStart = isRecipient && t.status === "new" && currentSubtab !== "sent";
+      const canMarkDone = isRecipient && t.status !== "done" && currentSubtab !== "sent";
+      const dateLabel = t.created_at ? t.created_at.slice(0, 10) : "";
+      const studentInfoHtml = t.student_name ? `
+        <div class="task-student-info">
+          🎓 <b>${t.student_name}</b>${t.student_group ? ` · ${t.student_group} guruhi` : ""}${t.student_phone ? ` · ${t.student_phone}` : ""}
+          ${t.student_problem_status ? `<span class="task-student-status">${t.student_problem_status}</span>` : ""}
+        </div>
+      ` : "";
+
+      // Tezkorlik nishoni — o'yin elementi: tez javob bergan xodimlarni rag'batlantirish
+      let speedBadge = "";
+      if (t.in_progress_at && t.created_at) {
+        const mins = (new Date(t.in_progress_at) - new Date(t.created_at)) / 60000;
+        if (mins <= 15 && t.status !== "new") speedBadge = `<span class="task-speed-badge">⚡ Tezkor javob</span>`;
+      }
+
+      const penaltyHtml = t.is_overdue && t.penalty_amount > 0
+        ? `<div class="task-penalty-row">⚠️ Muddati o'tgan — jarima: <b>${fmt(t.penalty_amount)}</b></div>`
+        : "";
+
+      return `
+        <div class="task-card-v2 ${t.urgent ? "task-urgent" : ""} ${t.is_overdue ? "task-overdue-border" : ""}">
+          <div class="task-card-top">
+            <span class="task-status-chip ${statusInfo.cls}">${statusInfo.label}</span>
+            ${t.urgent ? `<span class="task-urgent-chip">🔴 Shoshilinch</span>` : ""}
+            ${speedBadge}
+            <span class="task-daily-number">№${t.daily_number ?? "-"} · ${dateLabel}</span>
+          </div>
+
+          <div class="task-card-parties">
+            <span class="task-party-from">👤 ${t.from_full_name}</span>
+            <span class="task-party-arrow">→</span>
+            <span class="task-party-to">${t.to_display}</span>
+          </div>
+
+          <div class="task-text">${t.text}</div>
+          ${studentInfoHtml}
+
+          <div class="task-card-bottom-chips">
+            ${t.category_label ? `<span class="task-category-chip">${t.category_label}</span>` : ""}
+            ${t.deadline ? `<span class="task-deadline-chip ${t.is_overdue ? "task-deadline-overdue" : ""}">📅 ${t.deadline}${t.is_overdue ? " · muddati o'tgan" : ""}</span>` : ""}
+          </div>
+          ${penaltyHtml}
+
+          <div class="task-actions-row">
+            <button class="mini-btn task-comments-toggle" data-task-id="${t.id}">💬 Izohlar${t.comment_count > 0 ? " (" + t.comment_count + ")" : ""}</button>
+            ${canStart ? `<button class="mini-btn task-start-btn" data-task-id="${t.id}">🔄 Jarayonda</button>` : ""}
+            ${canMarkDone ? `<button class="mini-btn task-done-btn" data-task-id="${t.id}">✅ Bajarildi</button>` : ""}
+          </div>
+          <div class="task-comments-wrap" id="taskComments_${t.id}" style="display:none;"></div>
+        </div>
+      `;
+    }).join("");
+
+    listWrap.querySelectorAll(".task-comments-toggle").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const wrap = listWrap.querySelector(`#taskComments_${btn.dataset.taskId}`);
+        if (wrap.style.display === "block") {
+          wrap.style.display = "none";
+          return;
+        }
+        wrap.style.display = "block";
+        await renderTaskComments(wrap, btn.dataset.taskId, me);
+      });
+    });
+
+    listWrap.querySelectorAll(".task-start-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/tasks/${btn.dataset.taskId}/start`, { method: "POST" });
+          loadList();
+          loadMySummary(box.querySelector("#taskMySummaryWrap"));
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      });
+    });
+
+    listWrap.querySelectorAll(".task-done-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`/api/tasks/${btn.dataset.taskId}/done`, { method: "POST" });
+          loadList();
+          loadMySummary(box.querySelector("#taskMySummaryWrap"));
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      });
+    });
+  }
+
+  async function loadList() {
+    listWrap.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const endpoint = currentSubtab === "inbox" ? "/api/tasks/inbox" : currentSubtab === "sent" ? "/api/tasks/sent" : "/api/tasks/all";
+      const tasks = await api(endpoint);
+      renderFilterUI(tasks);
+      renderList(tasks);
+    } catch (err) {
+      listWrap.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  box.querySelectorAll("#taskSubTabs .tab").forEach((tabBtn) => {
+    tabBtn.addEventListener("click", () => {
+      box.querySelectorAll("#taskSubTabs .tab").forEach((x) => x.classList.remove("active"));
+      tabBtn.classList.add("active");
+      currentSubtab = tabBtn.dataset.subtab;
+      formWrap.innerHTML = "";
+      loadList();
+    });
+  });
+
+  box.querySelector("#newTaskBtn").addEventListener("click", async () => {
+    if (formWrap.innerHTML) { formWrap.innerHTML = ""; return; }
+    try {
+      await renderNewTaskForm(formWrap, me, () => {
+        formWrap.innerHTML = "";
+        currentSubtab = "sent";
+        box.querySelectorAll("#taskSubTabs .tab").forEach((x) => x.classList.remove("active"));
+        box.querySelector('[data-subtab="sent"]').classList.add("active");
+        loadList();
+      });
+    } catch (err) {
+      safeAlert("Forma ochilmadi: " + err.message);
+    }
+  });
+
+  await loadList();
+}
+
+async function renderTaskComments(box, taskId, me) {
+  box.innerHTML = `<div class="center-box" style="min-height:40px;"><div class="spinner" style="width:20px;height:20px;"></div></div>`;
+  try {
+    const comments = await api(`/api/tasks/${taskId}/comments`);
+    const commentsHtml = comments.length
+      ? comments.map((c) => `
+          <div class="task-comment-item">
+            <div class="task-comment-author">${c.from_full_name}</div>
+            <div class="task-comment-text">${c.text}</div>
+            <div class="task-comment-time">${_formatTaskTime(c.created_at)}</div>
+          </div>
+        `).join("")
+      : `<p style="font-size:12px;color:var(--hint);margin:6px 0;">Hali izoh yo'q</p>`;
+
+    box.innerHTML = `
+      <div class="task-comments-list">${commentsHtml}</div>
+      <div class="task-comment-add">
+        <input type="text" id="taskCommentInput_${taskId}" placeholder="Izoh yozing..." />
+        <button class="mini-btn" id="taskCommentSend_${taskId}">Yuborish</button>
+      </div>
+    `;
+
+    box.querySelector(`#taskCommentSend_${taskId}`).addEventListener("click", async () => {
+      const input = box.querySelector(`#taskCommentInput_${taskId}`);
+      const text = input.value.trim();
+      if (!text) return;
+      try {
+        await api(`/api/tasks/${taskId}/comments`, { method: "POST", body: JSON.stringify({ text }) });
+        input.value = "";
+        renderTaskComments(box, taskId, me);
+      } catch (err) {
+        safeAlert("Xato: " + err.message);
+      }
+    });
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+async function renderNewTaskForm(box, me, onCreated) {
+  const employees = (await api("/api/employees/directory")).filter((e) => e.teacher_id !== me.teacher_id);
+  const roles = [...new Set(employees.map((e) => e.role))];
+  const categories = await api("/api/task-categories");
+  const problemStatuses = await api("/api/task-problem-statuses");
+
+  box.innerHTML = `
+    <div class="card">
+      <label>Kimga yuborilsin?</label>
+      <select id="taskTargetType">
+        <option value="person">Aniq xodimga</option>
+        <option value="role">Butun rolga</option>
+      </select>
+
+      <div id="taskTargetPersonWrap">
+        <label>Xodim</label>
+        <select id="taskTargetPerson">
+          ${employees.map((e) => `<option value="${e.teacher_id}">${e.full_name} (${ROLE_LABELS_UZ_JS[e.role] || e.role})</option>`).join("")}
+        </select>
+      </div>
+      <div id="taskTargetRoleWrap" style="display:none;">
+        <label>Rol</label>
+        <select id="taskTargetRole">
+          ${roles.map((r) => `<option value="${r}">${ROLE_LABELS_UZ_JS[r] || r}</option>`).join("")}
+        </select>
+      </div>
+
+      <label>Topshiriq matni</label>
+      <textarea id="taskText" rows="3" placeholder="Masalan: Aliyev Botir talabani muzlating"></textarea>
+
+      <label>Kategoriya</label>
+      <select id="taskCategory">
+        ${categories.map((c) => `<option value="${c.key}">${c.icon ? c.icon + " " : ""}${c.label}</option>`).join("")}
+      </select>
+
+      <div id="taskStudentFieldsWrap">
+        <label>O'quvchi ism-familyasi</label>
+        <input id="taskStudentName" type="text" placeholder="masalan: Aliyev Botir" />
+
+        <label>Guruh nomi</label>
+        <input id="taskStudentGroup" type="text" placeholder="masalan: T2-Elementary" />
+
+        <label>Tel raqami</label>
+        <input id="taskStudentPhone" type="tel" placeholder="+998 XX XXX XX XX" />
+
+        <label>Muammo statusi</label>
+        <select id="taskStudentStatus">
+          <option value="">-</option>
+          ${problemStatuses.map((s) => `<option value="${s.label}">${s.label}</option>`).join("")}
+        </select>
+      </div>
+
+      <label>Muddat (ixtiyoriy)</label>
+      <input id="taskDeadline" type="date" min="${_todayDateStr()}" />
+
+      <div style="display:flex;align-items:center;gap:8px;margin:10px 0;">
+        <input id="taskUrgent" type="checkbox" style="width:auto;margin:0;" />
+        <label style="margin:0;">🔴 Shoshilinch</label>
+      </div>
+
+      <button class="primary" id="taskSubmitBtn">Yuborish</button>
+      <div id="taskFormMsg" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+  `;
+
+  const targetType = box.querySelector("#taskTargetType");
+  const personWrap = box.querySelector("#taskTargetPersonWrap");
+  const roleWrap = box.querySelector("#taskTargetRoleWrap");
+  const categorySelect = box.querySelector("#taskCategory");
+  const studentFieldsWrap = box.querySelector("#taskStudentFieldsWrap");
+  const textArea = box.querySelector("#taskText");
+  const nameInput = box.querySelector("#taskStudentName");
+  const groupInput = box.querySelector("#taskStudentGroup");
+  const phoneInput = box.querySelector("#taskStudentPhone");
+  const statusSelect = box.querySelector("#taskStudentStatus");
+
+  function toggleStudentFields() {
+    studentFieldsWrap.style.display = categorySelect.value === "student" ? "block" : "none";
+  }
+  categorySelect.addEventListener("change", toggleStudentFields);
+  toggleStudentFields();
+
+  function autoFillText() {
+    if (categorySelect.value !== "student" || !statusSelect.value) return;
+    textArea.value = _studentTaskTextTemplate(
+      statusSelect.value, nameInput.value.trim(), groupInput.value.trim(), phoneInput.value.trim()
+    );
+  }
+  [nameInput, groupInput, phoneInput, statusSelect].forEach((inp) => {
+    inp.addEventListener("input", autoFillText);
+    inp.addEventListener("change", autoFillText);
+  });
+
+  targetType.addEventListener("change", () => {
+    const isPerson = targetType.value === "person";
+    personWrap.style.display = isPerson ? "block" : "none";
+    roleWrap.style.display = isPerson ? "none" : "block";
+  });
+
+  box.querySelector("#taskSubmitBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#taskFormMsg");
+    const text = box.querySelector("#taskText").value.trim();
+    if (!text) {
+      msg.innerHTML = `<span class="badge warn">❌ Topshiriq matnini kiriting</span>`;
+      return;
+    }
+
+    const payload = {
+      text,
+      urgent: box.querySelector("#taskUrgent").checked,
+      category: categorySelect.value,
+      deadline: box.querySelector("#taskDeadline").value || null,
+    };
+    if (categorySelect.value === "student") {
+      payload.student_name = nameInput.value.trim() || null;
+      payload.student_group = groupInput.value.trim() || null;
+      payload.student_phone = phoneInput.value.trim() || null;
+      payload.student_problem_status = statusSelect.value || null;
+    }
+    if (targetType.value === "person") {
+      payload.to_teacher_id = box.querySelector("#taskTargetPerson").value;
+    } else {
+      payload.to_role = box.querySelector("#taskTargetRole").value;
+    }
+
+    msg.textContent = "Yuborilmoqda...";
+    try {
+      await api("/api/tasks", { method: "POST", body: JSON.stringify(payload) });
+      msg.innerHTML = `<span class="badge ok">✅ Yuborildi</span>`;
+      setTimeout(() => onCreated(), 500);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+}
+
+// ============================================================
+// ASOSIY QOIDALAR — Teacher va Edu Manager KPI qoidalarini tushuntirish
+// ============================================================
+
+async function renderKpiRulesTab(box) {
+  box.innerHTML = `
+    <div class="teacher-hero" style="padding:20px 16px;">
+      <div style="font-size:36px;">📜</div>
+      <h1 style="margin:6px 0 2px;font-size:18px;">Asosiy qoidalar</h1>
+      <div class="teacher-sub">KPI qanday hisoblanishini bilib oling</div>
+    </div>
+    <div class="menu-grid">
+      <div class="menu-card" data-rule="teacher">
+        <div class="menu-icon">👨‍🏫</div>
+        <div class="menu-text">
+          <div class="menu-label">O'qituvchi (Teacher)</div>
+          <div class="menu-desc">7 mezonli KPI tizimi — qanday baholanadi</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-rule="edumanager">
+        <div class="menu-icon">🎓</div>
+        <div class="menu-text">
+          <div class="menu-label">Ta'lim menejeri (Edu Manager)</div>
+          <div class="menu-desc">6 mezonli vaznli KPI tizimi — qanday baholanadi</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+    </div>
+  `;
+
+  box.querySelectorAll("[data-rule]").forEach((card) => {
+    card.addEventListener("click", () => {
+      if (card.dataset.rule === "teacher") renderTeacherKpiRules(box);
+      else renderEduManagerKpiRules(box);
+    });
+  });
+}
+
+function _ruleCriterionCard(icon, label, sub, tableRows, tableHeaders) {
+  const id = "rc_" + Math.random().toString(36).slice(2, 9);
+  return `
+    <div class="rule-criterion-card">
+      <div class="rule-criterion-head" data-toggle="${id}">
+        <span class="rule-criterion-icon">${icon}</span>
+        <div class="rule-criterion-titles">
+          <div class="rule-criterion-label">${label}</div>
+          ${sub ? `<div class="rule-criterion-sub">${sub}</div>` : ""}
+        </div>
+        <span class="rule-criterion-chevron">⌄</span>
+      </div>
+      <div class="rule-criterion-body" id="${id}" style="display:none;">
+        <table class="rule-table">
+          <thead><tr>${tableHeaders.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+          <tbody>${tableRows.map((row) => `<tr>${row.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function _wireRuleToggles(box) {
+  box.querySelectorAll("[data-toggle]").forEach((head) => {
+    head.addEventListener("click", () => {
+      const body = box.querySelector(`#${head.dataset.toggle}`);
+      const isOpen = body.style.display === "block";
+      body.style.display = isOpen ? "none" : "block";
+      head.querySelector(".rule-criterion-chevron").textContent = isOpen ? "⌄" : "︿";
+    });
+  });
+}
+
+function renderTeacherKpiRules(box) {
+  box.innerHTML = `
+    <button class="back-btn" id="rulesBackBtn">← Orqaga</button>
+    <div class="rule-hero rule-hero-teacher">
+      <div style="font-size:32px;">👨‍🏫</div>
+      <h2 style="margin:6px 0 0;color:#fff;">O'qituvchi KPI qoidalari</h2>
+    </div>
+
+    <div class="rule-step-card">
+      <div class="rule-step-num">1</div>
+      <div class="rule-step-text"><b>7 ta mezon</b> baholanadi, har biri o'z maksimal balliga ega. Ballar oddiy yig'indi bilan qo'shiladi — <b>maksimal 100 ball</b>.</div>
+    </div>
+
+    ${_ruleCriterionCard("🔁", "Retention", "Maksimal 25 ball", [
+      ["≥ 97%", "25 ball"], ["≥ 95%", "22 ball"], ["≥ 93%", "19 ball"], ["≥ 91%", "15 ball"],
+      ["≥ 89%", "10 ball"], ["≥ 87%", "5 ball"], ["< 87%", "0 ball"],
+    ], ["Retention foizi", "Ball"])}
+
+    ${_ruleCriterionCard("📈", "Student Progress", "Maksimal 25 ball", [
+      ["≥ 90%", "25 ball"], ["≥ 85%", "22 ball"], ["≥ 80%", "19 ball"], ["≥ 75%", "15 ball"],
+      ["≥ 70%", "10 ball"], ["≥ 65%", "5 ball"], ["< 65%", "0 ball"],
+    ], ["Progress foizi", "Ball"])}
+
+    ${_ruleCriterionCard("🗓️", "Attendance", "Maksimal 10 ball", [
+      ["≥ 92%", "10 ball"], ["≥ 90%", "9 ball"], ["≥ 88%", "8 ball"], ["≥ 86%", "7 ball"],
+      ["≥ 84%", "6 ball"], ["≥ 82%", "4 ball"], ["≥ 80%", "2 ball"], ["< 80%", "0 ball"],
+    ], ["Davomat foizi", "Ball"])}
+
+    ${_ruleCriterionCard("📝", "Homework Completion", "Maksimal 10 ball", [
+      ["≥ 90%", "10 ball"], ["≥ 85%", "9 ball"], ["≥ 80%", "8 ball"], ["≥ 75%", "7 ball"],
+      ["≥ 70%", "5 ball"], ["≥ 65%", "3 ball"], ["≥ 60%", "1 ball"], ["< 60%", "0 ball"],
+    ], ["Homework foizi", "Ball"])}
+
+    ${_ruleCriterionCard("👀", "Observation", "Maksimal 15 ball · Chiziqli", [
+      ["Kiritilgan ball (0-25) ÷ 25 × 15 = Ball", "Masalan: 20/25 → 12 ball"],
+    ], ["Formula", "Misol"])}
+
+    ${_ruleCriterionCard("💬", "Student Feedback", "Maksimal 10 ball", [
+      ["≥ 9.5", "10 ball"], ["≥ 9.0", "9 ball"], ["≥ 8.5", "8 ball"], ["≥ 8.0", "6 ball"],
+      ["≥ 7.5", "4 ball"], ["≥ 7.0", "2 ball"], ["< 7.0", "0 ball"],
+    ], ["O'rtacha ball (0-10)", "Ball"])}
+
+    ${_ruleCriterionCard("💻", "Platforma intizomi", "Maksimal 5 ball · Chiziqli", [
+      ["Kiritilgan ball (0-5) ÷ 5 × 5 = Ball", "Masalan: 4/5 → 4 ball"],
+    ], ["Formula", "Misol"])}
+
+    <div class="rule-step-card">
+      <div class="rule-step-num">2</div>
+      <div class="rule-step-text">Barcha 7 ta ball <b>qo'shiladi</b> = <b>Yakuniy KPI foizi</b> (0-100%).</div>
+    </div>
+
+    <div class="rule-step-card rule-step-warning">
+      <div class="rule-step-num">⚠️</div>
+      <div class="rule-step-text"><b>Minimal KPI foizi</b> (Sozlamalarda belgilangan): agar Yakuniy KPI foizi shu chegaradan <b>past</b> bo'lsa, KPI summasi butunlay <b>0</b> bo'ladi. Chegaraga yetsa — to'liq, haqiqiy foiz bo'yicha to'lanadi.</div>
+    </div>
+
+    <div class="rule-step-card">
+      <div class="rule-step-num">💰</div>
+      <div class="rule-step-text"><b>KPI summasi</b> = KPI fondi (Fix × KPI foizi sozlamasi) × Yakuniy KPI foizi ÷ 100</div>
+    </div>
+  `;
+  _wireRuleToggles(box);
+  box.querySelector("#rulesBackBtn").addEventListener("click", () => renderKpiRulesTab(box));
+}
+
+function renderEduManagerKpiRules(box) {
+  box.innerHTML = `
+    <button class="back-btn" id="rulesBackBtn">← Orqaga</button>
+    <div class="rule-hero rule-hero-edu">
+      <div style="font-size:32px;">🎓</div>
+      <h2 style="margin:6px 0 0;color:#fff;">Ta'lim menejeri KPI qoidalari</h2>
+    </div>
+
+    <div class="rule-step-card">
+      <div class="rule-step-num">1</div>
+      <div class="rule-step-text"><b>6 ta mezon</b> baholanadi, lekin bu safar har birining o'z <b>og'irligi (vazni)</b> bor — bular <b>vaznli o'rtacha</b> tarzida qo'shiladi (Teacher'dan farqli).</div>
+    </div>
+
+    ${_ruleCriterionCard("🔁", "Retention", "Vazn: 30%", [
+      ["≥ 98%", "100%"], ["≥ 97%", "93.3%"], ["≥ 96%", "86.7%"], ["≥ 95%", "80%"],
+      ["≥ 94%", "66.7%"], ["≥ 93%", "53.3%"], ["≥ 92%", "40%"], ["≥ 91%", "26.7%"], ["< 91%", "0%"],
+    ], ["Retention foizi", "Ball foizi"])}
+
+    ${_ruleCriterionCard("👨‍🏫", "Teacher Performance", "Vazn: 20%", [
+      ["≥ 90", "100%"], ["≥ 88", "90%"], ["≥ 86", "80%"], ["≥ 84", "70%"],
+      ["≥ 82", "50%"], ["≥ 80", "30%"], ["< 80", "0%"],
+    ], ["O'qituvchilar o'rtacha bali", "Ball foizi"])}
+
+    ${_ruleCriterionCard("📈", "Student Results o'sishi", "Vazn: 20%", [
+      ["≥ 8%", "100%"], ["≥ 6%", "90%"], ["≥ 4%", "80%"], ["≥ 2%", "60%"],
+      ["≥ 0%", "40%"], ["< 0% (manfiy)", "0%"],
+    ], ["Oldingi oyga nisbatan o'sish", "Ball foizi"])}
+
+    ${_ruleCriterionCard("🗓️", "Attendance", "Vazn: 10%", [
+      ["≥ 95%", "100%"], ["≥ 94%", "90%"], ["≥ 93%", "80%"], ["≥ 92%", "70%"],
+      ["≥ 91%", "60%"], ["≥ 90%", "50%"], ["< 90%", "0%"],
+    ], ["Davomat foizi", "Ball foizi"])}
+
+    ${_ruleCriterionCard("📝", "Homework", "Vazn: 10%", [
+      ["≥ 90%", "100%"], ["≥ 88%", "90%"], ["≥ 86%", "80%"], ["≥ 84%", "70%"],
+      ["≥ 82%", "60%"], ["≥ 80%", "50%"], ["< 80%", "0%"],
+    ], ["Homework foizi", "Ball foizi"])}
+
+    ${_ruleCriterionCard("🏫", "Group Occupancy", "Vazn: 10%", [
+      ["≥ 95%", "100%"], ["≥ 93%", "90%"], ["≥ 91%", "80%"], ["≥ 89%", "70%"],
+      ["≥ 87%", "60%"], ["≥ 85%", "50%"], ["< 85%", "0%"],
+    ], ["Guruhlar to'lganlik foizi", "Ball foizi"])}
+
+    <div class="rule-step-card">
+      <div class="rule-step-num">2</div>
+      <div class="rule-step-text">
+        <b>Yakuniy KPI foizi</b> = (Retention×30%) + (Teacher Perf×20%) + (Student Results×20%) + (Attendance×10%) + (Homework×10%) + (Occupancy×10%)
+      </div>
+    </div>
+
+    <div class="rule-step-card rule-step-danger">
+      <div class="rule-step-num">🔒</div>
+      <div class="rule-step-text">
+        <b>Ikkilamchi Gate</b> (faqat Edu Manager uchun): agar <b>"Hisobot tasdiqlangan"</b> yoki <b>"Ma'lumot haqqoniy"</b> katakchalaridan biri belgilanmagan bo'lsa — ball qanchalik yuqori bo'lmasin, KPI summasi butunlay <b>0</b> bo'ladi.
+      </div>
+    </div>
+
+    <div class="rule-step-card rule-step-warning">
+      <div class="rule-step-num">⚠️</div>
+      <div class="rule-step-text"><b>Minimal KPI foizi</b> (Sozlamalarda belgilangan): ikkala katakcha ✅ bo'lsa ham, agar Yakuniy KPI foizi shu chegaradan past bo'lsa — KPI summasi baribir <b>0</b> bo'ladi.</div>
+    </div>
+
+    <div class="rule-step-card">
+      <div class="rule-step-num">💰</div>
+      <div class="rule-step-text"><b>KPI summasi</b> = KPI fondi (Oylik maosh × KPI foizi sozlamasi) × Yakuniy KPI foizi ÷ 100</div>
+    </div>
+  `;
+  _wireRuleToggles(box);
+  box.querySelector("#rulesBackBtn").addEventListener("click", () => renderKpiRulesTab(box));
+}
+
+const GRADE_ORDER = ["T5", "T4", "T3", "T2", "T1", "T0"];
+
+async function renderEduTeachersTab(box) {
+  box.innerHTML = `
+    ${_monthSelectHtml("etMonth")}
+    <div id="etResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#etMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#etResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const employees = await api("/api/employees");
+      const teachers = employees.filter((e) => e.role === "Teacher");
+      teachers.sort((a, b) => {
+        const ga = GRADE_ORDER.indexOf(a.grade), gb = GRADE_ORDER.indexOf(b.grade);
+        if (ga !== gb) return ga - gb;
+        return a.full_name.localeCompare(b.full_name);
+      });
+
+      const itemsHtml = teachers.map((t, i) => `
+        <div class="teacher-rank-item">
+          <div class="rank-num-circle">${i + 1}</div>
+          <div class="teacher-rank-name">${t.full_name}</div>
+          <span class="grade-chip">${t.grade || "-"}</span>
+          <span class="stavka-chip">${t.workload_rate} stavka</span>
+        </div>
+      `).join("");
+
+      resultBox.innerHTML = `
+        <p style="font-size:12px;color:var(--hint);margin-bottom:10px;">${select.value} — jami ${teachers.length} o'qituvchi (daraja bo'yicha tartiblangan)</p>
+        ${itemsHtml || "<p style='color:var(--hint);font-size:13px;'>Ma'lumot yo'q</p>"}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+function _kpiColorClass(percent) {
+  if (percent >= 90) return "green";
+  if (percent >= 80) return "yellow";
+  return "red";
+}
+
+async function renderEduKpiTab(box) {
+  box.innerHTML = `
+    ${_monthSelectHtml("ekMonth")}
+    <div id="ekResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#ekMonth");
+  const medals = ["🥇", "🥈", "🥉"];
+
+  async function load() {
+    const resultBox = box.querySelector("#ekResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const data = await api(`/api/kpi-ranking?month=${select.value}`);
+
+      const missingHtml = data.missing_scorecard.length
+        ? `<div class="gate-warning">⚠️ Scorecard kiritilmagan: ${data.missing_scorecard.map((m) => m.full_name).join(", ")}</div>`
+        : "";
+
+      const itemsHtml = data.ranked.map((r, i) => `
+        <div class="kpi-rank-item">
+          <div class="rank-num-circle">${medals[i] || i + 1}</div>
+          <div class="teacher-rank-name">${r.full_name}<br/><span style="font-size:11px;color:var(--hint);font-weight:400;">${r.grade || "-"}</span></div>
+          <span class="kpi-chip ${_kpiColorClass(r.kpi_percent)}">${r.kpi_percent}%</span>
+        </div>
+      `).join("");
+
+      resultBox.innerHTML = `
+        ${missingHtml}
+        <div class="legend-row">
+          <span class="legend-item"><span class="legend-dot green"></span> 90%+</span>
+          <span class="legend-item"><span class="legend-dot yellow"></span> 80-89%</span>
+          <span class="legend-item"><span class="legend-dot red"></span> &lt;80%</span>
+        </div>
+        ${itemsHtml || "<p style='color:var(--hint);font-size:13px;'>Ma'lumot yo'q</p>"}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+async function renderEduReportsTab(box) {
+  box.innerHTML = `
+    ${_monthSelectHtml("erMonth")}
+    <div id="erResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#erMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#erResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const s = await api(`/api/reports/kpi-summary?month=${select.value}`);
+
+      const missingHtml = s.missing_scorecard.length
+        ? `<div class="gate-warning">⚠️ Scorecard kiritilmagan: ${s.missing_scorecard.map((m) => m.full_name).join(", ")}</div>`
+        : "";
+
+      const trendRows = s.trend.map((t) => `
+        <tr>
+          <td>${t.month}</td>
+          <td>${t.avg_kpi_percent !== null ? t.avg_kpi_percent + "%" : "-"}</td>
+        </tr>
+      `).join("");
+
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${s.month} — o'rtacha KPI</div>
+          <div class="amount">${s.avg_kpi_percent !== null ? s.avg_kpi_percent + "%" : "-"}</div>
+        </div>
+        ${missingHtml}
+        <div class="dash-grid">
+          <div class="dash-card"><div class="dash-num">${s.teacher_count}</div><div class="dash-label">Jami o'qituvchi</div></div>
+          <div class="dash-card"><div class="dash-num" style="color:var(--green)">${s.green_count}</div><div class="dash-label">90%+ natija</div></div>
+          <div class="dash-card"><div class="dash-num" style="color:#a6790a">${s.yellow_count}</div><div class="dash-label">80-89% natija</div></div>
+          <div class="dash-card"><div class="dash-num" style="color:var(--red)">${s.red_count}</div><div class="dash-label">80% dan past</div></div>
+        </div>
+        <h2>Oxirgi 6 oy — o'rtacha KPI</h2>
+        <div class="card" style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Oy</th><th>O'rtacha KPI</th></tr></thead>
+            <tbody>${trendRows}</tbody>
+          </table>
+        </div>
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+// ---------- DASHBOARD TAB ----------
+
+async function loadAiSummary(box, month) {
+  box.innerHTML = `<div class="center-box" style="min-height:60px;"><div class="spinner"></div></div>`;
+  try {
+    const res = await api(`/api/dashboard/ai-summary?month=${month}`);
+    renderAiSummaryState(box, month, res.exists ? res : null);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+function renderAiSummaryState(box, month, cached) {
+  if (!cached) {
+    box.innerHTML = `
+      <div class="ai-summary-card ai-summary-empty">
+        <div class="ai-summary-empty-text">🤖 Bu oy uchun AI xulosasi hali olinmagan</div>
+        <button class="primary" id="genAiSummaryBtn">✨ AI xulosasini olish</button>
+      </div>
+    `;
+  } else {
+    const genDate = cached.generated_at ? cached.generated_at.slice(0, 16).replace("T", " ") : "";
+    box.innerHTML = `
+      <div class="ai-summary-card">
+        <div class="ai-summary-head">
+          <span>🤖 AI xulosasi</span>
+          <button class="mini-btn" id="refreshAiSummaryBtn">🔄 Yangilash</button>
+        </div>
+        <div class="ai-summary-text">${cached.summary.replace(/\n/g, "<br/>")}</div>
+        <div class="ai-summary-time">Yaratilgan: ${genDate}</div>
+      </div>
+    `;
+    box.querySelector("#refreshAiSummaryBtn").addEventListener("click", () => generateAiSummary(box, month));
+  }
+
+  const genBtn = box.querySelector("#genAiSummaryBtn");
+  if (genBtn) genBtn.addEventListener("click", () => generateAiSummary(box, month));
+}
+
+async function generateAiSummary(box, month) {
+  box.innerHTML = `
+    <div class="ai-summary-card ai-summary-loading">
+      <div class="spinner" style="width:22px;height:22px;margin:0 auto 8px;"></div>
+      <div style="text-align:center;font-size:12px;color:var(--hint);">AI ma'lumotlarni tahlil qilmoqda...</div>
+    </div>
+  `;
+  try {
+    const res = await api(`/api/dashboard/ai-summary?month=${month}`, { method: "POST" });
+    renderAiSummaryState(box, month, res);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+async function renderDashboardTab(box) {
+  box.innerHTML = `
+    <div class="month-picker">
+      <label style="margin:0;">Oy:</label>
+      <select id="dMonth"></select>
+    </div>
+    <div id="dResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#dMonth");
+  lastNMonths(6).forEach((m) => {
+    const opt = document.createElement("option");
+    opt.value = m; opt.textContent = m;
+    select.appendChild(opt);
+  });
+
+  async function load() {
+    const resultBox = box.querySelector("#dResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/dashboard?month=${select.value}`);
+      const { start, end } = _monthDateRange(select.value);
+      let range = null;
+      try {
+        range = await api(`/api/company-metrics/range?start=${start}&end=${end}`);
+      } catch (e) {
+        range = null;
+      }
+
+      let diffHtml = "";
+      if (d.prev_total_expense > 0) {
+        const diff = d.total_expense - d.prev_total_expense;
+        const diffPct = ((diff / d.prev_total_expense) * 100).toFixed(1);
+        diffHtml = `<div style="font-size:12px;margin-top:4px;">${diff >= 0 ? "▲" : "▼"} ${Math.abs(diffPct)}% o'tgan oyga nisbatan</div>`;
+      }
+
+      const missingHtml = d.missing_scorecard.length
+        ? `<div class="gate-warning">⚠️ Scorecard kiritilmagan: ${d.missing_scorecard.map((m) => m.full_name).join(", ")}</div>`
+        : "";
+      const unlinkedHtml = d.unlinked_employees > 0
+        ? `<div class="gate-warning">⚠️ ${d.unlinked_employees} ta xodim hali tizimga bog'lanmagan</div>`
+        : "";
+
+      const medals = ["🥇", "🥈", "🥉"];
+      const top3Html = d.top3.length
+        ? `<div class="rank-list">${d.top3.map((t, i) => `
+            <div class="rank-item rank-top">
+              <span class="rank-medal">${medals[i] || "🎖️"}</span>
+              <span class="rank-name">${t.full_name}</span>
+              <span class="rank-percent good">${t.kpi_percent}%</span>
+            </div>
+          `).join("")}</div>`
+        : `<p style="color:var(--hint);font-size:13px;margin:0;">70% dan yuqori natija ko'rsatgan o'qituvchi hali yo'q</p>`;
+
+      const bottom3Html = d.bottom3.length
+        ? `<div class="rank-list">${d.bottom3.map((t) => `
+            <div class="rank-item rank-bottom">
+              <span class="rank-medal">⚠️</span>
+              <span class="rank-name">${t.full_name}</span>
+              <span class="rank-percent bad">${t.kpi_percent}%</span>
+            </div>
+          `).join("")}</div>`
+        : `<p style="color:var(--hint);font-size:13px;margin:0;">Ma'lumot yo'q</p>`;
+
+      // Tushum vs Xarajat taqqoslash paneli
+      let compareHtml = "";
+      if (d.total_revenue !== null) {
+        const maxVal = Math.max(d.total_revenue, d.total_expense, 1);
+        const revPct = Math.min(100, (d.total_revenue / maxVal) * 100);
+        const expPct = Math.min(100, (d.total_expense / maxVal) * 100);
+        compareHtml = `
+          <h2>Rentabellik</h2>
+          <div class="compare-panel">
+            <div class="compare-row">
+              <div class="compare-row-head"><span class="compare-label">Umumiy tushum</span><span class="compare-value">${fmt(d.total_revenue)}</span></div>
+              <div class="compare-bar-track"><div class="compare-bar-fill revenue" style="width:${revPct}%;"></div></div>
+            </div>
+            <div class="compare-row">
+              <div class="compare-row-head"><span class="compare-label">Umumiy xarajat</span><span class="compare-value">${fmt(d.total_expense)}</span></div>
+              <div class="compare-bar-track"><div class="compare-bar-fill expense" style="width:${expPct}%;"></div></div>
+            </div>
+            <div class="row" style="margin-top:4px;padding-top:10px;border-top:1px dashed #e5e5ea;">
+              <span class="label">Sof foyda</span>
+              <span class="value" style="color:${d.total_profit >= 0 ? "var(--green)" : "var(--red)"}">${fmt(d.total_profit)}</span>
+            </div>
+          </div>
+        `;
+      } else {
+        compareHtml = `<p style="font-size:12px;color:var(--hint);">💡 "Tushum" bo'limida oylik tushumni kiritsangiz, bu yerda sof foyda ham chiqadi.</p>`;
+      }
+
+      // Kompaniya ko'rsatkichlari (rol asosidagi tasdiqlangan kunlik ma'lumotlardan)
+      let companyStatsHtml = "";
+      if (range && range.days_with_data > 0) {
+        const s = range.sums;
+        const conversion = s.trial_count > 0 ? Math.round((s.sales_count / s.trial_count) * 100) : null;
+        const growthChipClass = range.aggregate_growth === null ? "" : range.aggregate_growth >= 0 ? "up" : "down";
+        const growthChipHtml = range.aggregate_growth !== null
+          ? `<div class="growth-chip ${growthChipClass}">${range.aggregate_growth >= 0 ? "▲" : "▼"} ${Math.abs(range.aggregate_growth)} o'quvchi (oylik o'sish)</div>`
+          : "";
+
+        companyStatsHtml = `
+          <h2>🏢 Kompaniya ko'rsatkichlari</h2>
+          ${growthChipHtml ? `<div style="text-align:center;margin-bottom:10px;">${growthChipHtml}</div>` : ""}
+          <div class="stat-grid">
+            <div class="stat-mini"><div class="stat-mini-icon">🆕</div><div class="stat-mini-num">${s.new_admissions}</div><div class="stat-mini-label">Yangi qabul</div></div>
+            <div class="stat-mini"><div class="stat-mini-icon">💼</div><div class="stat-mini-num">${s.sales_count}</div><div class="stat-mini-label">Sotuv soni</div></div>
+            <div class="stat-mini"><div class="stat-mini-icon">🎯</div><div class="stat-mini-num">${conversion !== null ? conversion + "%" : "-"}</div><div class="stat-mini-label">Konversiya</div></div>
+            <div class="stat-mini"><div class="stat-mini-icon">📅</div><div class="stat-mini-num">${range.avg_attendance_percent !== null ? range.avg_attendance_percent + "%" : "-"}</div><div class="stat-mini-label">O'rtacha davomat</div></div>
+            <div class="stat-mini"><div class="stat-mini-icon">⚠️</div><div class="stat-mini-num">${s.risky_count}</div><div class="stat-mini-label">Xavfli o'quvchi</div></div>
+            <div class="stat-mini"><div class="stat-mini-icon">🧊</div><div class="stat-mini-num">${s.frozen_count}</div><div class="stat-mini-label">Muzlatilgan</div></div>
+            <div class="stat-mini"><div class="stat-mini-icon">🚪</div><div class="stat-mini-num">${s.left_count}</div><div class="stat-mini-label">Chiqib ketgan</div></div>
+            <div class="stat-mini"><div class="stat-mini-icon">😠</div><div class="stat-mini-num">${s.complaints_count}</div><div class="stat-mini-label">Shikoyatlar</div></div>
+            <div class="stat-mini"><div class="stat-mini-icon">☎️</div><div class="stat-mini-num">${s.repeat_sales_calls}</div><div class="stat-mini-label">Qayta qo'ng'iroqlar</div></div>
+          </div>
+          <p style="font-size:11px;color:var(--hint);margin:-4px 0 12px;">${range.days_with_data} kunlik tasdiqlangan ma'lumot asosida</p>
+        `;
+      } else {
+        companyStatsHtml = `<p style="font-size:12px;color:var(--hint);">💡 Kompaniya bo'limida xodimlarning kunlik ma'lumotlari tasdiqlangach, bu yerda to'liq statistika chiqadi.</p>`;
+      }
+
+      resultBox.innerHTML = `
+        <div id="aiSummaryWrap"><div class="center-box" style="min-height:60px;"><div class="spinner"></div></div></div>
+
+        <div class="total-box">
+          <div class="caption">${d.month} — jami xarajat (FIX+KPI+Bonus)</div>
+          <div class="amount">${fmt(d.total_expense)}</div>
+          ${diffHtml}
+        </div>
+        ${missingHtml}
+        ${unlinkedHtml}
+        <div class="dash-grid">
+          <div class="dash-card"><div class="dash-card-icon">👥</div><div class="dash-num">${d.active_employees}</div><div class="dash-label">Faol xodim</div></div>
+          <div class="dash-card"><div class="dash-card-icon">💳</div><div class="dash-num">${fmt(d.total_advance)}</div><div class="dash-label">Berilgan avans</div></div>
+        </div>
+
+        ${companyStatsHtml}
+
+        <h2>Top-3 o'qituvchi (KPI)</h2>
+        <div class="card">${top3Html}</div>
+        <h2>E'tibor talab qiladi (past KPI)</h2>
+        <div class="card">${bottom3Html}</div>
+        ${compareHtml}
+      `;
+
+      loadAiSummary(box.querySelector("#aiSummaryWrap"), select.value);
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+// ---------- KOMPANIYA KO'RSATKICHI TAB (kunlik) ----------
+
+const CM_STUDENT_FIELDS = [
+  { id: "start_active", label: "🌅 Kun boshidagi faol o'quvchilar soni", step: "1" },
+  { id: "new_admissions", label: "🆕 Yangi qabul soni", step: "1" },
+  { id: "sales_count", label: "💼 Sotuv soni", step: "1" },
+  { id: "trial_count", label: "🧪 Sinov darsidagi o'quvchi soni", step: "1" },
+  { id: "frozen_count", label: "🧊 Muzlatilgan o'quvchi soni", step: "1" },
+  { id: "left_count", label: "🚪 Chiqib ketgan o'quvchi soni", step: "1" },
+  { id: "risky_count", label: "⚠️ Xavfli o'quvchilar soni", step: "1" },
+  { id: "attendance_percent", label: "📅 Davomat foizi (%)", step: "0.1" },
+  { id: "end_active", label: "🌇 Kun oxiridagi faol o'quvchilar soni", step: "1" },
+];
+
+const CM_CONTACT_FIELDS = [
+  { id: "repeat_sales_calls", label: "🔁 Qayta sotuv qo'ng'iroqlar soni", step: "1" },
+  { id: "admin_contacted_clients", label: "📞 Administratorga bog'langan mijozlar soni", step: "1" },
+  { id: "risky_contacted_count", label: "☎️ Xavfli o'quvchilar bilan bog'lanildi soni", step: "1" },
+];
+
+const CM_REVENUE_FIELDS = [
+  { id: "click_revenue", label: "💳 Click tushum" },
+  { id: "card_revenue", label: "🏦 Plastik tushum" },
+  { id: "cash_revenue", label: "💵 Naqt tushum" },
+];
+
+const CM_EXPENSE_FIELDS = [
+  { id: "click_expense", label: "💳 Click xarajat" },
+  { id: "card_expense", label: "🏦 Plastik xarajat" },
+  { id: "cash_expense", label: "💵 Naqt xarajat" },
+];
+
+const CM_TASK_FIELDS = [
+  { id: "admin_task", label: "🗂️ Administratorga topshiriq" },
+  { id: "sales_task", label: "📞 Sotuvchiga topshiriq" },
+  { id: "edu_manager_task", label: "🎓 Ta'lim menejeriga topshiriq" },
+];
+
+function _cmNumberFieldsHtml(fields) {
+  return fields.map((f) => `
+    <div class="sc-field">
+      <label>${f.label}</label>
+      <input id="cm_${f.id}" type="number" step="${f.step}" min="0" />
+    </div>
+  `).join("");
+}
+
+// Pul maydonlari uchun: faqat qo'lda kiritish (spinner o'q-strelkalari yo'q),
+// manfiyga tushmaydi, va "2 300 000" ko'rinishida ming-ming ajratib ko'rsatiladi.
+function _cmMoneyFieldsHtml(fields) {
+  return fields.map((f) => `
+    <div class="sc-field">
+      <label>${f.label}</label>
+      <input id="cm_${f.id}" type="text" inputmode="numeric" placeholder="0" />
+    </div>
+  `).join("");
+}
+
+function _formatThousands(rawDigits) {
+  if (!rawDigits) return "";
+  return rawDigits.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+function _parseFormattedNumber(str) {
+  const digits = (str || "").replace(/[^\d]/g, "");
+  return digits === "" ? null : parseFloat(digits);
+}
+
+function _attachMoneyFormatting(input, onChange) {
+  input.addEventListener("input", () => {
+    const cursorFromEnd = input.value.length - input.selectionStart;
+    const digits = input.value.replace(/[^\d]/g, "");
+    const formatted = _formatThousands(digits);
+    input.value = formatted;
+    const newPos = Math.max(0, formatted.length - cursorFromEnd);
+    input.setSelectionRange(newPos, newPos);
+    if (onChange) onChange();
+  });
+}
+
+// O'zbekiston tel raqami: +998 XX XXX XX XX ko'rinishida jonli formatlash
+function _formatUzPhone(raw) {
+  let digits = (raw || "").replace(/\D/g, "");
+  if (digits.startsWith("998")) digits = digits.slice(3);
+  digits = digits.slice(0, 9);
+  let out = "+998";
+  if (digits.length > 0) out += " " + digits.slice(0, 2);
+  if (digits.length > 2) out += " " + digits.slice(2, 5);
+  if (digits.length > 5) out += " " + digits.slice(5, 7);
+  if (digits.length > 7) out += " " + digits.slice(7, 9);
+  return out;
+}
+
+// Formatlangan tel raqamdan saqlash uchun toza "+998XXXXXXXXX" qiymatini oladi (to'liq bo'lmasa null)
+function _parseUzPhone(formatted) {
+  let digits = (formatted || "").replace(/\D/g, "");
+  if (digits.startsWith("998")) digits = digits.slice(3);
+  digits = digits.slice(0, 9);
+  return digits.length === 9 ? "+998" + digits : null;
+}
+
+function _cmTaskFieldsHtml(fields) {
+  return fields.map((f) => `
+    <div class="sc-field">
+      <label>${f.label}</label>
+      <textarea id="cm_${f.id}" rows="3" placeholder="Topshiriq matnini yozing..."></textarea>
+    </div>
+  `).join("");
+}
+
+function _todayStr() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function _smKpiBreakdownHtml(b) {
+  if (!b) return "";
+  const items = [
+    { label: "📈 Konversiya bonusi", value: b.conversion_bonus, note: `${b.conversion_percent}% konversiya` },
+    { label: "💼 Hajm bonusi (25+)", value: b.volume_bonus, note: `${b.total_sales} ta sotuv` },
+    { label: "🏆 55+ milestone", value: b.milestone_bonus, note: b.total_sales >= 55 ? "erishildi" : "erishilmadi" },
+    { label: "⭐ Combo bonus", value: b.combo_bonus, note: b.combo_bonus > 0 ? "80%+ va 60+ sotuv" : "shart bajarilmadi" },
+  ];
+  return `
+    <div class="sm-kpi-breakdown">
+      <div class="sm-kpi-breakdown-title">KPI qayerdan shakllandi:</div>
+      ${items.map((it) => `
+        <div class="sm-kpi-breakdown-item ${it.value > 0 ? "sm-kpi-active" : "sm-kpi-inactive"}">
+          <span>${it.label} <span class="sm-kpi-note">(${it.note})</span></span>
+          <b>${it.value > 0 ? "+" + fmt(it.value) : "0"}</b>
+        </div>
+      `).join("")}
+      <div class="sm-kpi-breakdown-total">
+        <span>Jami KPI summasi</span>
+        <b>${fmt(b.conversion_bonus + b.volume_bonus + b.milestone_bonus + b.combo_bonus)}</b>
+      </div>
+    </div>
+  `;
+}
+
+const SM_PENDING_LABELS = {
+  repeat_calls_archive: "🔁 Qayta sotuv qo'ng'iroqlari",
+  reinvite_count: "📨 Re-invite",
+  new_admissions: "🆕 Yangi qabul",
+  trial_booked: "🧪 Sinovga yozilgan",
+  trial_attended: "✅ Sinovga kelgan",
+  activated_count: "⚡ Faollashtirilgan",
+  new_sales: "💼 Yangi sotuv",
+  waiting_contact_count: "☎️ Kutishdagilar bilan aloqa",
+};
+
+const ADMIN_PENDING_LABELS = {
+  admin_contacted_clients: "📞 Bog'langan mijozlar",
+  risky_contacted_count: "☎️ Xavflilar bilan aloqa",
+  frozen_count: "🧊 Muzlatilgan",
+  frozen_reason: "🧊 Muzlatish sababi",
+  left_count: "🚪 Chiqib ketgan",
+  left_reason: "🚪 Chiqib ketish sababi",
+  complaints_count: "😠 Shikoyatlar",
+};
+
+const EDU_PENDING_LABELS = {
+  start_active: "🌅 Kun boshi faol o'quvchi",
+  end_active: "🌇 Kun oxiri faol o'quvchi",
+  attendance_percent: "📅 Davomat foizi",
+  risky_count: "⚠️ Xavfli o'quvchilar",
+};
+
+async function _renderGenericPendingList(box, { apiPrefix, labels }) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  try {
+    const rows = await api(`/api/${apiPrefix}/pending`);
+
+    if (!rows.length) {
+      box.innerHTML = `<p style="color:var(--hint);font-size:13px;margin:0 0 16px;">Hozircha tasdiqlash kutilayotgan yozuv yo'q.</p>`;
+      return;
+    }
+
+    box.innerHTML = rows.map((r) => `
+      <div class="sm-pending-item" data-key="${r.teacher_id}__${r.date}">
+        <div class="sm-pending-header">
+          <span class="sm-pending-name">${r.full_name}</span>
+          <span class="sm-pending-date">${r.date}</span>
+        </div>
+        <div class="sm-pending-fields">
+          ${Object.keys(labels).map((k) => `
+            <div class="pf-item"><span class="pf-label">${labels[k]}</span><span class="pf-value">${r[k] ?? "-"}</span></div>
+          `).join("")}
+        </div>
+        <div class="sm-pending-actions">
+          <button class="secondary" data-reject="${r.teacher_id}__${r.date}">❌ Otkaz</button>
+          <button class="primary" data-approve="${r.teacher_id}__${r.date}">✅ Tasdiqlash</button>
+        </div>
+      </div>
+    `).join("");
+
+    box.querySelectorAll("[data-approve]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [teacherId, date] = btn.dataset.approve.split("__");
+        const row = rows.find((r) => r.teacher_id === teacherId && r.date === date);
+        showConfirm(
+          "Tasdiqlashni tasdiqlang",
+          `<b>${row.full_name}</b>ning <b>${date}</b> kunlik ma'lumotlari tasdiqlansinmi? Bu amalni keyin bekor qilib bo'lmaydi.`,
+          async () => {
+            try {
+              await api(`/api/${apiPrefix}/approve`, {
+                method: "POST",
+                body: JSON.stringify({ teacher_id: teacherId, date }),
+              });
+              _renderGenericPendingList(box, { apiPrefix, labels });
+            } catch (err) {
+              safeAlert("Xato: " + err.message);
+            }
+          }
+        );
+      });
+    });
+
+    box.querySelectorAll("[data-reject]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [teacherId, date] = btn.dataset.reject.split("__");
+        const row = rows.find((r) => r.teacher_id === teacherId && r.date === date);
+        showTextPromptModal(
+          `${row.full_name} — ${date}`,
+          "Nima uchun otkaz qilinmoqda? (ixtiyoriy izoh)",
+          async (note) => {
+            try {
+              await api(`/api/${apiPrefix}/reject`, {
+                method: "POST",
+                body: JSON.stringify({ teacher_id: teacherId, date, note: note || null }),
+              });
+              _renderGenericPendingList(box, { apiPrefix, labels });
+            } catch (err) {
+              safeAlert("Xato: " + err.message);
+            }
+          }
+        );
+      });
+    });
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+async function renderSMPendingList(box) {
+  await _renderGenericPendingList(box, { apiPrefix: "sales-manager-daily", labels: SM_PENDING_LABELS });
+}
+
+async function renderAdminPendingList(box) {
+  await _renderGenericPendingList(box, { apiPrefix: "administrator-daily", labels: ADMIN_PENDING_LABELS });
+}
+
+async function renderEduPendingList(box) {
+  await _renderGenericPendingList(box, { apiPrefix: "edu-manager-daily", labels: EDU_PENDING_LABELS });
+}
+
+async function renderCompanyTab(box) {
+  const allFieldDefs = [...CM_REVENUE_FIELDS, ...CM_EXPENSE_FIELDS, ...CM_TASK_FIELDS];
+  const allFieldIds = allFieldDefs.map((f) => f.id);
+  const revenueIds = CM_REVENUE_FIELDS.map((f) => f.id);
+  const expenseIds = CM_EXPENSE_FIELDS.map((f) => f.id);
+  const moneyIds = [...revenueIds, ...expenseIds];
+  const taskIds = CM_TASK_FIELDS.map((f) => f.id);
+
+  const AUTO_FIELD_DEFS = [...CM_STUDENT_FIELDS, ...CM_CONTACT_FIELDS];
+
+  box.innerHTML = `
+    <h2>📋 Sotuv menejeri — tasdiqlash kutilmoqda</h2>
+    <div id="smPendingList"><div class="center-box"><div class="spinner"></div></div></div>
+
+    <h2>📋 Administrator — tasdiqlash kutilmoqda</h2>
+    <div id="adminPendingList"><div class="center-box"><div class="spinner"></div></div></div>
+
+    <h2>📋 Ta'lim menejeri — tasdiqlash kutilmoqda</h2>
+    <div id="eduPendingList"><div class="center-box"><div class="spinner"></div></div></div>
+
+    <div class="card">
+      <label>Sana</label>
+      <input type="date" id="cmDate" value="${_todayStr()}" />
+    </div>
+    <div id="cmGrowthBanner"></div>
+
+    <h2>🎒 Talabalar harakati <span style="font-size:10px;color:var(--hint);text-transform:none;">(xodimlar ma'lumotlaridan avtomatik)</span></h2>
+    <div class="card" id="cmAutoSummary"></div>
+
+    <h2>💰 Tushum</h2>
+    <div class="card sc-form">${_cmMoneyFieldsHtml(CM_REVENUE_FIELDS)}</div>
+    <div id="cmRevenueTotal" class="total-box"></div>
+
+    <h2>💸 Xarajat</h2>
+    <div class="card sc-form">${_cmMoneyFieldsHtml(CM_EXPENSE_FIELDS)}</div>
+    <div id="cmExpenseTotal" class="total-box"></div>
+
+    <h2>📝 Topshiriqlar</h2>
+    <div class="card sc-form">${_cmTaskFieldsHtml(CM_TASK_FIELDS)}</div>
+
+    <button class="primary" id="cmSaveBtn">Saqlash</button>
+    <div id="cmMsg" style="margin-top:8px;font-size:13px;"></div>
+
+    <h2>📅 Kunlik tarix</h2>
+    <div id="cmHistory"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  await renderSMPendingList(box.querySelector("#smPendingList"));
+  await renderAdminPendingList(box.querySelector("#adminPendingList"));
+  await renderEduPendingList(box.querySelector("#eduPendingList"));
+
+  const dateInput = box.querySelector("#cmDate");
+
+  function renderAutoSummary(data) {
+    const summaryBox = box.querySelector("#cmAutoSummary");
+    summaryBox.innerHTML = AUTO_FIELD_DEFS.map((f) => `
+      <div class="row"><span class="label">${f.label}</span><span class="value">${data && data[f.id] !== null && data[f.id] !== undefined ? data[f.id] : "—"}</span></div>
+    `).join("");
+  }
+
+  function updateComputedTotals() {
+    const rev = revenueIds.reduce((sum, id) => {
+      const v = _parseFormattedNumber(box.querySelector(`#cm_${id}`).value);
+      return sum + (v || 0);
+    }, 0);
+    const exp = expenseIds.reduce((sum, id) => {
+      const v = _parseFormattedNumber(box.querySelector(`#cm_${id}`).value);
+      return sum + (v || 0);
+    }, 0);
+    box.querySelector("#cmRevenueTotal").innerHTML = `<div class="caption">Umumiy tushum</div><div class="amount">${fmt(rev)}</div>`;
+    box.querySelector("#cmExpenseTotal").innerHTML = `<div class="caption">Umumiy xarajat</div><div class="amount">${fmt(exp)}</div>`;
+  }
+
+  function renderGrowthBanner(data) {
+    const banner = box.querySelector("#cmGrowthBanner");
+    if (data.growth === null || data.growth === undefined) {
+      banner.innerHTML = "";
+      return;
+    }
+    const isGrowth = data.growth >= 0;
+    banner.innerHTML = `
+      <div class="growth-banner ${isGrowth ? "growth-up" : "growth-down"}">
+        <span class="growth-icon">${isGrowth ? "📈" : "📉"}</span>
+        <span class="growth-text">${isGrowth ? "O'sish" : "Tushish"}: ${data.growth > 0 ? "+" : ""}${data.growth} ta o'quvchi</span>
+      </div>
+    `;
+  }
+
+  function clearForm() {
+    allFieldIds.forEach((id) => {
+      const input = box.querySelector(`#cm_${id}`);
+      if (input) input.value = "";
+    });
+    updateComputedTotals();
+    box.querySelector("#cmGrowthBanner").innerHTML = "";
+    renderAutoSummary(null);
+  }
+
+  function fillForm(data) {
+    allFieldIds.forEach((id) => {
+      const input = box.querySelector(`#cm_${id}`);
+      if (!input) return;
+      if (moneyIds.includes(id)) {
+        input.value = data[id] !== null && data[id] !== undefined ? _formatThousands(String(Math.round(data[id]))) : "";
+      } else {
+        input.value = data[id] ?? "";
+      }
+    });
+    updateComputedTotals();
+    renderGrowthBanner(data);
+    renderAutoSummary(data);
+  }
+
+  moneyIds.forEach((id) => {
+    _attachMoneyFormatting(box.querySelector(`#cm_${id}`), updateComputedTotals);
+  });
+
+  async function loadDate() {
+    box.querySelector("#cmMsg").textContent = "";
+    try {
+      const res = await api(`/api/company-metrics?date=${dateInput.value}`);
+      if (res.exists) fillForm(res.data);
+      else clearForm();
+    } catch (err) {
+      box.querySelector("#cmMsg").innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  }
+
+  async function loadHistory() {
+    const histBox = box.querySelector("#cmHistory");
+    histBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const res = await api("/api/company-metrics/history?limit=14");
+      if (!res.rows.length) {
+        histBox.innerHTML = `<p style="color:var(--hint);font-size:13px;">Hali ma'lumot kiritilmagan</p>`;
+        return;
+      }
+      histBox.innerHTML = res.rows.map((r) => {
+        const isGrowth = r.growth === null ? null : r.growth >= 0;
+        const chip = isGrowth === null
+          ? ""
+          : `<span class="growth-chip ${isGrowth ? "up" : "down"}">${isGrowth ? "▲" : "▼"} ${r.growth}</span>`;
+        return `
+          <div class="cm-history-item" data-date="${r.date}">
+            <div class="cm-history-date">${r.date}</div>
+            <div class="cm-history-mid">
+              <span class="cm-history-label">Tushum:</span> ${fmt(r.total_revenue)}
+              <span class="cm-history-label" style="margin-left:8px;">Xarajat:</span> ${fmt(r.total_expense)}
+            </div>
+            ${chip}
+          </div>
+        `;
+      }).join("");
+
+      histBox.querySelectorAll("[data-date]").forEach((item) => {
+        item.addEventListener("click", () => {
+          dateInput.value = item.dataset.date;
+          loadDate();
+        });
+      });
+    } catch (err) {
+      histBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  box.querySelector("#cmSaveBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#cmMsg");
+    msg.textContent = "Saqlanmoqda...";
+    try {
+      const body = { date: dateInput.value };
+      allFieldIds.forEach((id) => {
+        const input = box.querySelector(`#cm_${id}`);
+        if (taskIds.includes(id)) {
+          body[id] = input.value || null;
+        } else if (moneyIds.includes(id)) {
+          body[id] = _parseFormattedNumber(input.value);
+        } else {
+          body[id] = input.value === "" ? null : parseFloat(input.value);
+        }
+      });
+      const res = await api("/api/company-metrics", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+      renderGrowthBanner(res.data);
+      loadHistory();
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+
+  dateInput.addEventListener("change", loadDate);
+
+  loadDate();
+  loadHistory();
+}
+
+// ---------- MOLIYA TAB (avvalgi "Payroll") ----------
+
+// ---------- MOLIYA (menyu: Ish haqi / Kompaniya moliyasi) ----------
+
+async function renderMoliyaTab(box) {
+  renderMoliyaHome(box);
+}
+
+function renderMoliyaHome(box) {
+  box.innerHTML = `
+    <div class="menu-grid">
+      <div class="menu-card" data-nav="ishhaqi">
+        <div class="menu-icon">💼</div>
+        <div class="menu-text">
+          <div class="menu-label">Ish haqi</div>
+          <div class="menu-desc">Fix, KPI, Bonus, Avans va Rashchyot</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="tushum">
+        <div class="menu-icon">📈</div>
+        <div class="menu-text">
+          <div class="menu-label">Tushum</div>
+          <div class="menu-desc">O'qituvchi bo'yicha tushum va ish haqi foizi</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="kompaniyamoliyasi">
+        <div class="menu-icon">🏢</div>
+        <div class="menu-text">
+          <div class="menu-label">Kompaniya moliyasi</div>
+          <div class="menu-desc">Tushum, xarajat va sof foyda (P&L)</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+    </div>
+  `;
+  box.querySelectorAll("[data-nav]").forEach((card) => {
+    card.addEventListener("click", () => {
+      if (card.dataset.nav === "ishhaqi") renderIshHaqiSection(box);
+      else if (card.dataset.nav === "tushum") renderTushumSection(box);
+      else renderKompaniyaMoliyasiSection(box);
+    });
+  });
+}
+
+async function renderIshHaqiSection(box) {
+  box.innerHTML = `<button class="back-btn" id="ihBackBtn">← Orqaga</button><div id="ihInner"></div>`;
+  box.querySelector("#ihBackBtn").addEventListener("click", () => renderMoliyaHome(box));
+  await renderIshHaqiContent(box.querySelector("#ihInner"));
+}
+
+async function renderTushumSection(box) {
+  box.innerHTML = `<button class="back-btn" id="tuBackBtn">← Orqaga</button><div id="tuInner"></div>`;
+  box.querySelector("#tuBackBtn").addEventListener("click", () => renderMoliyaHome(box));
+  await renderRevenueTab(box.querySelector("#tuInner"));
+}
+
+async function renderKompaniyaMoliyasiSection(box) {
+  box.innerHTML = `<button class="back-btn" id="kmBackBtn">← Orqaga</button><div id="kmInner"></div>`;
+  box.querySelector("#kmBackBtn").addEventListener("click", () => renderMoliyaHome(box));
+  await renderKompaniyaMoliyasiContent(box.querySelector("#kmInner"));
+}
+
+const PAYROLL_ROLE_LABELS = {
+  Teacher: "O'qituvchi",
+  SubjectTeacher: "Fan o'qituvchisi",
+  Administrator: "Administrator",
+  SalesManager: "Sotuv menejeri",
+  Director: "Direktor",
+  EduManager: "Ta'lim menejeri",
+  CEO: "CEO",
+};
+
+function _payrollCategoryForRole(role) {
+  if (role === "Teacher") return "teacher";
+  if (role === "SubjectTeacher") return "subject_teacher";
+  return "staff";
+}
+
+const PAYROLL_CATEGORY_LABELS = {
+  teacher: "👨‍🏫 O'qituvchilar",
+  subject_teacher: "🎓 Fan o'qituvchilari",
+  staff: "🧑‍💼 Xodimlar (Admin/Sotuv/Rahbariyat)",
+};
+
+async function renderIshHaqiContent(box) {
+  box.innerHTML = `
+    <div class="month-picker">
+      <label style="margin:0;">Oy:</label>
+      <select id="pMonth"></select>
+    </div>
+    <div class="card">
+      <label>Rol bo'yicha filtr</label>
+      <select id="pRoleFilter">
+        <option value="all">Barcha rollar</option>
+      </select>
+    </div>
+    <div id="pResult"></div>
+  `;
+  const select = box.querySelector("#pMonth");
+  lastNMonths(6).forEach((m) => {
+    const opt = document.createElement("option");
+    opt.value = m; opt.textContent = m;
+    select.appendChild(opt);
+  });
+  const roleFilter = box.querySelector("#pRoleFilter");
+  const resultBox = box.querySelector("#pResult");
+
+  async function load() {
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    const data = await api(`/api/payroll?month=${select.value}`);
+
+    // Rol filtri variantlarini shu oydagi haqiqiy natijalardan yig'amiz
+    const presentRoles = [...new Set(data.results.map((r) => r.role))];
+    const currentFilterVal = roleFilter.value || "all";
+    roleFilter.innerHTML = `<option value="all">Barcha rollar</option>` +
+      presentRoles.map((r) => `<option value="${r}">${PAYROLL_ROLE_LABELS[r] || r}</option>`).join("");
+    roleFilter.value = presentRoles.includes(currentFilterVal) ? currentFilterVal : "all";
+
+    // Kategoriya bo'yicha (Teacher / SubjectTeacher / Staff) yig'indilar — HAR DOIM
+    // barcha natijalar asosida hisoblanadi (filtrdan qat'i nazar, umumiy manzara uchun)
+    const categories = {
+      teacher: { fix: 0, kpi: 0 },
+      subject_teacher: { fix: 0, kpi: 0 },
+      staff: { fix: 0, kpi: 0 },
+    };
+    data.results.forEach((r) => {
+      const cat = _payrollCategoryForRole(r.role);
+      categories[cat].fix += r.fix;
+      categories[cat].kpi += r.kpi_amount;
+    });
+
+    const categoryCardsHtml = Object.keys(categories).map((cat) => `
+      <div class="role-category-card">
+        <div class="role-category-label">${PAYROLL_CATEGORY_LABELS[cat]}</div>
+        <div class="role-category-values">
+          <div class="role-category-value-col">
+            <div class="role-category-value-num">${fmt(categories[cat].fix)}</div>
+            <div class="role-category-value-label">Fix</div>
+          </div>
+          <div class="role-category-divider"></div>
+          <div class="role-category-value-col">
+            <div class="role-category-value-num">${fmt(categories[cat].kpi)}</div>
+            <div class="role-category-value-label">KPI</div>
+          </div>
+        </div>
+      </div>
+    `).join("");
+
+    // Filtrlangan royxat (faqat korsatish uchun)
+    const filteredResults = roleFilter.value === "all"
+      ? data.results
+      : data.results.filter((r) => r.role === roleFilter.value);
+
+    const totalFix = filteredResults.reduce((s, r) => s + r.fix, 0);
+    const totalKpi = filteredResults.reduce((s, r) => s + r.kpi_amount, 0);
+    const totalBonus = filteredResults.reduce((s, r) => s + r.bonus, 0);
+    const totalAvans = filteredResults.reduce((s, r) => s + r.advance_given, 0);
+    const totalRashchyotFiltered = filteredResults.reduce(
+      (s, r) => s + (r.is_settled ? r.settled_amount : (r.kpi_available ? r.rashchyot : 0)), 0
+    );
+
+    const missingHtml = data.missing_scorecard.length
+      ? `<div class="gate-warning">⚠️ Baholanmagan: ${data.missing_scorecard.map((m) => m.full_name).join(", ")}</div>`
+      : "";
+
+    const cardsHtml = filteredResults.map((r) => `
+      <div class="payroll-card">
+        <div class="payroll-card-header">
+          <div>
+            <div class="payroll-card-name">${r.full_name}</div>
+            <div class="payroll-card-meta">${r.grade ? r.grade + " · " : r.subject ? r.subject + " · " : r.role + " · "}${r.teacher_id}</div>
+            ${r.role === "SubjectTeacher" ? `<div style="font-size:10px;color:var(--hint);">Ulush: ${r.revenue_percent}% · Tushum: ${r.revenue_amount !== null && r.revenue_amount !== undefined ? fmt(r.revenue_amount) : "kiritilmagan"}</div>` : ""}
+          </div>
+          <div class="payroll-card-kpi">${r.kpi_available ? r.kpi_percent + "%" : "—"}</div>
+        </div>
+        <div class="payroll-card-breakdown">
+          <div class="pcb-item"><span>Fix</span><b>${fmt(r.fix)}</b></div>
+          <div class="pcb-item"><span>KPI</span><b>${r.kpi_available ? fmt(r.kpi_amount) : "—"}</b></div>
+          <div class="pcb-item"><span>Bonus</span><b>${fmt(r.bonus)}</b></div>
+          <div class="pcb-item pcb-total"><span>Umumiy</span><b>${fmt(r.total)}</b></div>
+        </div>
+        ${r.role === "SalesManager" && r.kpi_available ? _smKpiBreakdownHtml(r.breakdown) : ""}
+        ${!r.kpi_available ? `<p style="font-size:11px;color:var(--hint);margin:4px 0 8px;">⚠️ Scorecard hali kiritilmagan — Avans berish mumkin, lekin Rashchyot uchun avval Scorecard kiriting</p>` : ""}
+        ${r.kpi_available && r.gate_notes && r.gate_notes.length ? r.gate_notes.map((n) => `<p style="font-size:11px;color:var(--red);margin:4px 0 8px;">⚠️ ${n}</p>`).join("") : ""}
+        <div class="payroll-status-row">
+          <div class="payroll-status-chip">
+            <span class="ps-label">Avans</span>
+            <span class="ps-amount">${fmt(r.advance_given)}</span>
+            <span class="ps-badge ${r.advance_is_given ? "ps-done" : "ps-pending"}">${r.advance_is_given ? "✓ berilgan" + (r.advance_is_manual ? " (qo'lda)" : "") : "kutilmoqda"}</span>
+          </div>
+          <button class="mini-btn" data-give-advance="${r.teacher_id}">Avans berish</button>
+        </div>
+        <div class="payroll-status-row">
+          <div class="payroll-status-chip">
+            <span class="ps-label">Rashchyot</span>
+            <span class="ps-amount">${r.is_settled ? fmt(r.settled_amount) : (r.kpi_available ? fmt(r.rashchyot) : "—")}</span>
+            <span class="ps-badge ${r.is_settled ? "ps-done" : "ps-pending"}">${r.is_settled ? "✓ to'landi" + (r.settlement_is_manual ? " (qo'lda)" : "") : r.kpi_available ? "kutilmoqda" : "Scorecard kerak"}</span>
+          </div>
+          <button class="mini-btn" data-give-settlement="${r.teacher_id}" ${(r.is_settled || !r.kpi_available) ? "disabled" : ""}>${r.is_settled ? "To'landi ✓" : "Rashchyot berish"}</button>
+        </div>
+      </div>
+    `).join("");
+
+    const selectedRoleLabel = roleFilter.value === "all" ? null : (PAYROLL_ROLE_LABELS[roleFilter.value] || roleFilter.value);
+
+    const summaryHtml = roleFilter.value === "all" ? `
+      <h2>Rol kategoriyalari bo'yicha</h2>
+      <div class="role-category-grid">${categoryCardsHtml}</div>
+
+      <h2>Umumiy jami (barcha rollar)</h2>
+      <div class="dash-grid">
+        <div class="dash-card"><div class="dash-card-icon">💵</div><div class="dash-num">${fmt(totalFix)}</div><div class="dash-label">Jami Fix</div></div>
+        <div class="dash-card"><div class="dash-card-icon">🎯</div><div class="dash-num">${fmt(totalKpi)}</div><div class="dash-label">Jami KPI</div></div>
+        <div class="dash-card"><div class="dash-card-icon">🎁</div><div class="dash-num">${fmt(totalBonus)}</div><div class="dash-label">Jami Bonus</div></div>
+        <div class="dash-card"><div class="dash-card-icon">💳</div><div class="dash-num">${fmt(totalAvans)}</div><div class="dash-label">Jami Avans</div></div>
+      </div>
+    ` : `
+      <h2>📌 ${selectedRoleLabel} bo'yicha (${filteredResults.length} kishi)</h2>
+      <div class="dash-grid">
+        <div class="dash-card"><div class="dash-card-icon">💵</div><div class="dash-num">${fmt(totalFix)}</div><div class="dash-label">Fix</div></div>
+        <div class="dash-card"><div class="dash-card-icon">🎯</div><div class="dash-num">${fmt(totalKpi)}</div><div class="dash-label">KPI</div></div>
+        <div class="dash-card"><div class="dash-card-icon">🎁</div><div class="dash-num">${fmt(totalBonus)}</div><div class="dash-label">Bonus</div></div>
+        <div class="dash-card"><div class="dash-card-icon">💳</div><div class="dash-num">${fmt(totalAvans)}</div><div class="dash-label">Avans</div></div>
+      </div>
+    `;
+
+    resultBox.innerHTML = `
+      ${summaryHtml}
+      <div class="total-box">
+        <div class="caption">${data.month} — ${roleFilter.value === "all" ? "jami rashchyot (to'lanadigan)" : selectedRoleLabel + " — jami rashchyot"}</div>
+        <div class="amount">${fmt(roleFilter.value === "all" ? data.total_rashchyot : totalRashchyotFiltered)}</div>
+        <div style="font-size:12px;opacity:0.85;margin-top:4px;">Umumiy (Fix+KPI+Bonus): ${fmt(totalFix + totalKpi + totalBonus)}</div>
+      </div>
+      ${missingHtml}
+      ${cardsHtml || "<p style='color:var(--hint);font-size:13px;'>Ma'lumot yo'q</p>"}
+    `;
+
+    resultBox.querySelectorAll("[data-give-advance]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const teacherId = btn.dataset.giveAdvance;
+        const teacherRow = data.results.find((r) => r.teacher_id === teacherId);
+        showAmountChoiceModal(
+          "Avans berish",
+          `<b>${teacherRow.full_name}</b> uchun <b>${select.value}</b> oyi bo'yicha avans berilsinmi?`,
+          teacherRow.auto_advance_preview,
+          async (manualAmount) => {
+            try {
+              const body = { teacher_id: teacherId, month: select.value };
+              if (manualAmount !== null) body.manual_amount = manualAmount;
+              const res = await api("/api/advance", { method: "POST", body: JSON.stringify(body) });
+              safeAlert(`Avans berildi: ${fmt(res.amount)}`);
+              load();
+            } catch (err) {
+              safeAlert("Xato: " + err.message);
+            }
+          }
+        );
+      });
+    });
+
+    resultBox.querySelectorAll("[data-give-settlement]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const teacherId = btn.dataset.giveSettlement;
+        const teacherRow = data.results.find((r) => r.teacher_id === teacherId);
+        showAmountChoiceModal(
+          "Rashchyot to'landi deb belgilash",
+          `<b>${teacherRow.full_name}</b> uchun <b>${select.value}</b> oyi bo'yicha yakuniy hisob-kitob to'landi deb belgilansinmi? Bu amalni keyin bekor qilib bo'lmaydi.`,
+          teacherRow.rashchyot,
+          async (manualAmount) => {
+            try {
+              const body = { teacher_id: teacherId, month: select.value };
+              if (manualAmount !== null) body.manual_amount = manualAmount;
+              const res = await api("/api/settlement", { method: "POST", body: JSON.stringify(body) });
+              safeAlert(`Rashchyot to'landi: ${fmt(res.amount)}`);
+              load();
+            } catch (err) {
+              safeAlert("Xato: " + err.message);
+            }
+          }
+        );
+      });
+    });
+  }
+
+  select.addEventListener("change", load);
+  roleFilter.addEventListener("change", load);
+  load();
+}
+
+async function renderKompaniyaMoliyasiContent(box) {
+  box.innerHTML = `
+    <div class="month-picker">
+      <label style="margin:0;">Oy:</label>
+      <select id="fmMonth"></select>
+    </div>
+    <div id="fmResult"></div>
+  `;
+  const select = box.querySelector("#fmMonth");
+  lastNMonths(6).forEach((m) => {
+    const opt = document.createElement("option");
+    opt.value = m; opt.textContent = m;
+    select.appendChild(opt);
+  });
+  const resultBox = box.querySelector("#fmResult");
+
+  async function load() {
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/finance-summary?month=${select.value}`);
+      const isProfit = d.net_profit >= 0;
+
+      resultBox.innerHTML = `
+        <div class="growth-banner ${isProfit ? "growth-up" : "growth-down"}" style="font-size:16px;">
+          <span class="growth-icon">${isProfit ? "📈" : "📉"}</span>
+          <span class="growth-text">Sof foyda: ${fmt(d.net_profit)}</span>
+        </div>
+
+        <h2>💰 Kompaniya (kunlik ma'lumotlar asosida)</h2>
+        <div class="card">
+          <div class="row"><span class="label">Tushum</span><span class="value" style="color:var(--green);">+${fmt(d.company_revenue)}</span></div>
+          <div class="row"><span class="label">Operatsion xarajat</span><span class="value" style="color:var(--red);">−${fmt(d.company_expense)}</span></div>
+        </div>
+        ${d.days_with_data === 0 ? `<p style="font-size:12px;color:var(--hint);">💡 Bu oy uchun "Kompaniya" bo'limida hali kunlik ma'lumot kiritilmagan.</p>` : ""}
+
+        <h2>👥 Ish haqi xarajati</h2>
+        <div class="card">
+          <div class="row"><span class="label">Fix</span><span class="value">${fmt(d.payroll_fix)}</span></div>
+          <div class="row"><span class="label">KPI</span><span class="value">${fmt(d.payroll_kpi)}</span></div>
+          <div class="row"><span class="label">Bonus</span><span class="value">${fmt(d.payroll_bonus)}</span></div>
+          <div class="row"><span class="label"><b>Jami ish haqi</b></span><span class="value">−${fmt(d.payroll_total)}</span></div>
+        </div>
+
+        <div class="total-box">
+          <div class="caption">Formula: Tushum − Operatsion xarajat − Ish haqi</div>
+          <div class="amount">${fmt(d.net_profit)}</div>
+        </div>
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+// ---------- SCORECARD TAB ----------
+
+async function renderScorecardTab(box, me) {
+  const employees = await api("/api/employees");
+  const showBonus = me.role !== "EduManager";
+
+  box.innerHTML = `
+    <h2>👤 Xodim</h2>
+    <div class="card">
+      <label>Xodim tanlang</label>
+      <select id="scEmployee">
+        ${employees.map((e) => `<option value="${e.teacher_id}" data-role="${e.role}" data-name="${e.full_name}">${e.full_name} (${e.role}${e.grade ? " · " + e.grade : ""})</option>`).join("")}
+      </select>
+    </div>
+
+    <div id="scMainArea"></div>
+
+    ${showBonus ? `
+      <h2>🎁 Bonus qo'shish</h2>
+      <div class="card">
+        <label>Oy</label>
+        <select id="b_month">
+          ${lastNMonths(3).map((m) => `<option value="${m}">${m}</option>`).join("")}
+        </select>
+        <label>Summa (so'm)</label>
+        <input id="b_amount" type="text" inputmode="numeric" placeholder="masalan: 500 000" />
+        <label>Izoh</label>
+        <input id="b_note" type="text" placeholder="masalan: Mentorlik bonusi" />
+        <button class="primary" id="bonusBtn">Bonus qo'shish</button>
+        <div id="bonusMsg" style="margin-top:8px;font-size:13px;"></div>
+      </div>
+    ` : ""}
+  `;
+
+  const employeeSelect = box.querySelector("#scEmployee");
+  const mainArea = box.querySelector("#scMainArea");
+
+  function currentRole() {
+    return employeeSelect.selectedOptions[0]?.dataset.role;
+  }
+  function currentName() {
+    return employeeSelect.selectedOptions[0]?.dataset.name;
+  }
+
+  async function renderMainForSelected() {
+    if (currentRole() === "Teacher") {
+      await renderScorecardHistoryView(mainArea, employeeSelect.value, currentName());
+    } else if (currentRole() === "EduManager") {
+      await renderEduManagerScorecardHistoryView(mainArea, employeeSelect.value, currentName());
+    } else if (currentRole() === "SalesManager") {
+      await renderSalesManagerKpiView(mainArea, employeeSelect.value, currentName());
+    } else {
+      mainArea.innerHTML = `
+        <div class="card">
+          <p style="font-size:13px;color:var(--hint);margin:0;">
+            💡 Bu lavozim uchun KPI/samaradorlik tizimi hali ishlab chiqilmagan.
+            Hozircha ish haqi faqat <b>Oylik maosh + Bonus</b> asosida hisoblanadi.
+            Ish ko'rsatkichlari aniqlangach, bu yerga baholash tizimi qo'shiladi.
+          </p>
+        </div>
+      `;
+    }
+  }
+
+  employeeSelect.addEventListener("change", renderMainForSelected);
+  await renderMainForSelected();
+
+  if (!showBonus) return;
+
+  const bonusAmountInput = box.querySelector("#b_amount");
+  _attachMoneyFormatting(bonusAmountInput);
+
+  box.querySelector("#bonusBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#bonusMsg");
+    msg.textContent = "Saqlanmoqda...";
+    try {
+      await api("/api/bonus", {
+        method: "POST",
+        body: JSON.stringify({
+          teacher_id: employeeSelect.value,
+          month: box.querySelector("#b_month").value,
+          amount: _parseFormattedNumber(bonusAmountInput.value) || 0,
+          note: box.querySelector("#b_note").value,
+        }),
+      });
+      msg.innerHTML = `<span class="badge ok">✅ Bonus qo'shildi</span>`;
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+}
+
+// Tanlangan o'qituvchining scorecard tarixi — Tahrirlash/O'chirish tugmalari bilan
+async function renderScorecardHistoryView(box, teacherId, employeeName) {
+  box.innerHTML = `
+    <h2>📅 ${employeeName} — Scorecard tarixi</h2>
+    <div class="card">
+      <label>Necha oylik tarix ko'rsatilsin</label>
+      <select id="scHistRange">
+        <option value="3">Oxirgi 3 oy</option>
+        <option value="6" selected>Oxirgi 6 oy</option>
+        <option value="12">Oxirgi 12 oy</option>
+      </select>
+    </div>
+    <div id="scHistList"><div class="center-box"><div class="spinner"></div></div></div>
+    <button class="primary" id="scNewBtn">+ Yangi oy uchun kiritish</button>
+    <div id="scFormWrap"></div>
+  `;
+
+  const rangeSelect = box.querySelector("#scHistRange");
+  const listBox = box.querySelector("#scHistList");
+  let currentHistory = [];
+
+  async function loadHistory() {
+    listBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      currentHistory = await api(`/api/scorecard/history?teacher_id=${teacherId}&months=${rangeSelect.value}`);
+
+      const itemsHtml = currentHistory.map((h) => `
+        <div class="sc-history-item">
+          <div class="sc-history-info">
+            <div class="sc-history-month">${h.month} <span class="kpi-chip ${_kpiColorClass(h.kpi_percent)}" style="margin-left:6px;">${h.kpi_percent}%</span></div>
+            <div class="sc-history-mini">Retention ${h.retention ?? "-"}% · Progress ${h.progress ?? "-"}% · Attendance ${h.attendance ?? "-"}%</div>
+          </div>
+          <div class="sc-history-actions">
+            <button class="mini-btn" data-edit-month="${h.month}">✏️ Tahrirlash</button>
+            <button class="mini-btn" data-delete-month="${h.month}">🗑️ O'chirish</button>
+          </div>
+        </div>
+      `).join("");
+
+      listBox.innerHTML = `
+        <div class="card">
+          ${itemsHtml || `<p style="color:var(--hint);font-size:13px;margin:0;">Tanlangan oraliqda hali scorecard kiritilmagan</p>`}
+        </div>
+      `;
+
+      listBox.querySelectorAll("[data-edit-month]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const month = btn.dataset.editMonth;
+          const entry = currentHistory.find((h) => h.month === month);
+          renderScorecardForm(box.querySelector("#scFormWrap"), teacherId, entry, () => loadHistory());
+        });
+      });
+
+      listBox.querySelectorAll("[data-delete-month]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const month = btn.dataset.deleteMonth;
+          showConfirm(
+            "Scorecardni o'chirish",
+            `<b>${employeeName}</b>ning <b>${month}</b> oyi uchun scorecard yozuvi butunlay o'chirilsinmi? Bu amalni qaytarib bo'lmaydi.`,
+            async () => {
+              try {
+                await api("/api/scorecard/delete", {
+                  method: "POST",
+                  body: JSON.stringify({ teacher_id: teacherId, month }),
+                });
+                loadHistory();
+              } catch (err) {
+                safeAlert("Xato: " + err.message);
+              }
+            }
+          );
+        });
+      });
+    } catch (err) {
+      listBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  box.querySelector("#scNewBtn").addEventListener("click", () => {
+    renderScorecardForm(box.querySelector("#scFormWrap"), teacherId, null, () => loadHistory());
+  });
+
+  rangeSelect.addEventListener("change", loadHistory);
+  await loadHistory();
+}
+
+function renderScorecardForm(wrap, teacherId, existing, onSaved) {
+  const isEdit = !!existing;
+  const monthOptions = lastNMonths(6);
+
+  wrap.innerHTML = `
+    <h2>${isEdit ? "✏️ Tahrirlash — " + existing.month : "📋 Yangi scorecard"}</h2>
+    <div class="card sc-form">
+      ${isEdit ? "" : `
+        <div class="sc-field">
+          <label>Oy</label>
+          <select id="f_month">
+            ${monthOptions.map((m) => `<option value="${m}">${m}</option>`).join("")}
+          </select>
+        </div>
+      `}
+      <div class="sc-field">
+        <label>🔁 Retention (%)</label>
+        <input id="f_retention" type="number" step="0.1" placeholder="masalan: 95" value="${existing?.retention ?? ""}" />
+      </div>
+      <div class="sc-field">
+        <label>📈 Student Progress (%)</label>
+        <input id="f_progress" type="number" step="0.1" placeholder="masalan: 89" value="${existing?.progress ?? ""}" />
+      </div>
+      <div class="sc-field">
+        <label>🗓️ Attendance (%)</label>
+        <input id="f_attendance" type="number" step="0.1" placeholder="masalan: 90" value="${existing?.attendance ?? ""}" />
+      </div>
+      <div class="sc-field">
+        <label>📝 Homework Completion (%)</label>
+        <input id="f_homework" type="number" step="0.1" placeholder="masalan: 84" value="${existing?.homework ?? ""}" />
+      </div>
+      <div class="sc-field">
+        <label>👀 Observation (0-25 ball)</label>
+        <input id="f_observation" type="number" step="0.1" placeholder="masalan: 21" value="${existing?.observation ?? ""}" />
+      </div>
+      <div class="sc-field">
+        <label>💬 Student Feedback (0-10)</label>
+        <input id="f_feedback" type="number" step="0.1" placeholder="masalan: 9.2" value="${existing?.feedback ?? ""}" />
+      </div>
+      <div class="sc-field">
+        <label>💻 Platforma intizomi (0-5)</label>
+        <input id="f_lms" type="number" step="0.1" placeholder="masalan: 5" value="${existing?.lms ?? ""}" />
+      </div>
+
+      <button class="primary" id="scSaveBtn">Saqlash</button>
+      <button class="secondary" id="scCancelBtn">Bekor qilish</button>
+      <div id="scSaveMsg" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+  `;
+
+  wrap.querySelector("#scCancelBtn").addEventListener("click", () => { wrap.innerHTML = ""; });
+
+  wrap.querySelector("#scSaveBtn").addEventListener("click", async () => {
+    const msg = wrap.querySelector("#scSaveMsg");
+    msg.textContent = "Saqlanmoqda...";
+    const month = isEdit ? existing.month : wrap.querySelector("#f_month").value;
+    try {
+      await api("/api/scorecard", {
+        method: "POST",
+        body: JSON.stringify({
+          teacher_id: teacherId,
+          month: month,
+          retention: parseFloat(wrap.querySelector("#f_retention").value) || null,
+          progress: parseFloat(wrap.querySelector("#f_progress").value) || null,
+          attendance: parseFloat(wrap.querySelector("#f_attendance").value) || null,
+          homework: parseFloat(wrap.querySelector("#f_homework").value) || null,
+          observation: parseFloat(wrap.querySelector("#f_observation").value) || null,
+          feedback: parseFloat(wrap.querySelector("#f_feedback").value) || null,
+          lms: parseFloat(wrap.querySelector("#f_lms").value) || null,
+        }),
+      });
+      msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+      setTimeout(() => { if (onSaved) onSaved(); }, 500);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+}
+
+// ---------- EDU MANAGER: 6 MEZONLI KPI SCORECARD ----------
+
+function _kpiGoalBarHtml(current, target, label, achievedText, pendingText) {
+  const pct = Math.min(100, Math.round((current / target) * 100));
+  const achieved = current >= target;
+  return `
+    <div class="kpi-goal-row">
+      <div class="kpi-goal-head">
+        <span>${achieved ? "✅" : "🎯"} ${label}</span>
+        <span class="kpi-goal-count">${current} / ${target}</span>
+      </div>
+      <div class="kpi-goal-track">
+        <div class="kpi-goal-fill ${achieved ? "kpi-goal-done" : ""}" style="width:${pct}%;"></div>
+      </div>
+      <div class="kpi-goal-sub">${achieved ? achievedText : pendingText}</div>
+    </div>
+  `;
+}
+
+function _generateSalesManagerTips(b) {
+  const tips = [];
+
+  if (b.total_sales < 25) {
+    tips.push({ icon: "⚠️", text: `Oylik majburiy me'yorga (25 ta) yetish uchun yana <b>${25 - b.total_sales} ta</b> sotuv kerak.`, cls: "tip-warning" });
+  } else {
+    const extra = b.total_sales - 25;
+    tips.push({ icon: "✅", text: `Majburiy me'yorni bajardingiz! Qo'shimcha <b>${extra} ta</b> sotuv uchun +<b>${fmt(extra * 25000)}</b> ishlab oldingiz.`, cls: "tip-success" });
+  }
+
+  if (b.total_sales < 55) {
+    tips.push({ icon: "🏆", text: `55 ta sotuvga yetsangiz +<b>500,000 so'm</b> bonus! Yana <b>${55 - b.total_sales} ta</b> qoldi.`, cls: "tip-info" });
+  } else {
+    tips.push({ icon: "🏆", text: `55+ Milestone bonusini qo'lga kiritdingiz — +<b>500,000 so'm</b>!`, cls: "tip-success" });
+  }
+
+  if (b.conversion_percent < 70) {
+    tips.push({ icon: "📈", text: `Konversiyangiz ${b.conversion_percent}%. 70%ga yetsangiz +<b>500,000</b>, 85%ga yetsangiz +<b>1,000,000 so'm</b> olasiz.`, cls: "tip-warning" });
+  } else if (b.conversion_percent < 85) {
+    tips.push({ icon: "📈", text: `Konversiyangiz zo'r — ${b.conversion_percent}%! 85%ga yetkazsangiz yana +<b>500,000 so'm</b> ko'proq olasiz.`, cls: "tip-info" });
+  } else {
+    tips.push({ icon: "🌟", text: `Ajoyib! Konversiyangiz ${b.conversion_percent}% — maksimal konversiya bonusini (+1,000,000 so'm) olyapsiz.`, cls: "tip-success" });
+  }
+
+  if (b.combo_bonus > 0) {
+    tips.push({ icon: "⭐", text: `SUPER natija! Combo bonusni qo'lga kiritdingiz (60+ sotuv va 80%+ konversiya) — +<b>1,500,000 so'm</b>!`, cls: "tip-success" });
+  } else if (b.total_sales >= 40) {
+    tips.push({ icon: "⭐", text: `Combo bonusga (+1,500,000 so'm) yaqinlashyapsiz! 60 tadan ortiq sotuv va 80%dan yuqori konversiya kerak.`, cls: "tip-info" });
+  }
+
+  return tips;
+}
+
+async function renderSalesManagerOwnKpiTab(box, me) {
+  box.innerHTML = `
+    <h2>🚀 Mening KPI'im</h2>
+    ${_monthSelectHtml("smOwnKpiMonth")}
+    <div id="smOwnKpiResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#smOwnKpiMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#smOwnKpiResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/me/payroll?month=${select.value}`);
+
+      if (!d.kpi_available) {
+        resultBox.innerHTML = `
+          <div class="card">
+            <p style="font-size:13px;color:var(--hint);margin:0;">
+              📋 ${d.month} uchun hali Direktor tomonidan tasdiqlangan kunlik ma'lumot yo'q.
+              "Kun" bo'limida ma'lumot kiritib, yuboring — Direktor tasdiqlagach, bu yerda natijalaringiz jonlanadi!
+            </p>
+          </div>
+        `;
+        return;
+      }
+
+      const b = d.breakdown;
+      const tips = _generateSalesManagerTips(b);
+
+      resultBox.innerHTML = `
+        <div class="total-box" style="background: linear-gradient(135deg, #7c5cff, #4b2ee0);">
+          <div class="caption">${d.month} — Hozirgi KPI (bonus) summangiz</div>
+          <div class="amount">${fmt(d.kpi_amount)}</div>
+          <div style="font-size:12px;opacity:0.85;margin-top:4px;">${b.approved_days} kunlik tasdiqlangan ma'lumot asosida</div>
+        </div>
+
+        <h2>📊 Bu oygi natijalaringiz</h2>
+        <div class="stat-grid">
+          <div class="stat-mini"><div class="stat-mini-icon">📥</div><div class="stat-mini-num">${b.total_admissions}</div><div class="stat-mini-label">Qabul soni</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">📝</div><div class="stat-mini-num">${b.total_trial_booked}</div><div class="stat-mini-label">Sinovga yozilgan</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">🚶</div><div class="stat-mini-num">${b.total_trial_attended}</div><div class="stat-mini-label">Sinovga kelgan</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">⚡</div><div class="stat-mini-num">${b.total_activated}</div><div class="stat-mini-label">Faollashtirilgan</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">💼</div><div class="stat-mini-num">${b.total_sales}</div><div class="stat-mini-label">Yangi sotuv</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">🎯</div><div class="stat-mini-num">${b.conversion_percent}%</div><div class="stat-mini-label">Konversiya</div></div>
+        </div>
+
+        <h2>🏁 Bonusga yo'l xaritangiz</h2>
+        <div class="card">
+          ${_kpiGoalBarHtml(b.total_sales, 25, "Majburiy me'yor", "Bajarildi — endi har bir sotuv uchun +25,000 so'm ishlaysiz!", "Har bir sotuv sizni bonusga yaqinlashtiradi")}
+          ${_kpiGoalBarHtml(b.total_sales, 55, "55+ Milestone bonusi", "Qo'lga kiritildi — +500,000 so'm!", "55 taga yetsangiz +500,000 so'm bonus")}
+          ${_kpiGoalBarHtml(b.total_sales, 60, "Combo uchun sotuv sharti (60+)", "Sotuv sharti bajarildi!", "Combo bonus uchun 60 tadan ortiq sotuv kerak")}
+          ${_kpiGoalBarHtml(b.conversion_percent, 85, "Maksimal konversiya bonusi (85%)", "Maksimal darajaga yetdingiz!", "85% konversiyaga yetsangiz +1,000,000 so'm")}
+        </div>
+
+        <h2>💡 Sizga tavsiyalar</h2>
+        <div class="card">
+          ${tips.map((t) => `
+            <div class="kpi-tip-row ${t.cls}">
+              <span class="kpi-tip-icon">${t.icon}</span>
+              <span class="kpi-tip-text">${t.text}</span>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  await load();
+}
+
+async function renderSalesManagerKpiView(box, teacherId, employeeName) {
+  box.innerHTML = `
+    <h2>📅 ${employeeName} — KPI (avtomatik hisoblangan)</h2>
+    <div class="card">
+      <label>Oy</label>
+      <select id="smkMonth">
+        ${lastNMonths(6).map((m) => `<option value="${m}">${m}</option>`).join("")}
+      </select>
+    </div>
+    <div id="smkResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const select = box.querySelector("#smkMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#smkResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const payroll = await api(`/api/payroll?month=${select.value}`);
+      const row = payroll.results.find((r) => r.teacher_id === teacherId);
+
+      if (!row || !row.kpi_available) {
+        resultBox.innerHTML = `
+          <div class="card">
+            <p style="font-size:13px;color:var(--hint);margin:0;">
+              📋 ${select.value} uchun hali Direktor tomonidan tasdiqlangan kunlik ma'lumot yo'q.
+              KPI Direktor kamida bitta kunlik yozuvni tasdiqlagach avtomatik hisoblanadi.
+            </p>
+          </div>
+        `;
+        return;
+      }
+
+      const b = row.breakdown;
+      resultBox.innerHTML = `
+        <div class="stat-grid">
+          <div class="stat-mini"><div class="stat-mini-icon">📥</div><div class="stat-mini-num">${b.total_admissions}</div><div class="stat-mini-label">Qabul soni</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">💼</div><div class="stat-mini-num">${b.total_sales}</div><div class="stat-mini-label">Umumiy sotuv</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">➖</div><div class="stat-mini-num">${b.extra_sales_over_quota}</div><div class="stat-mini-label">25 tadan ortig'i</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">🎯</div><div class="stat-mini-num">${b.conversion_percent}%</div><div class="stat-mini-label">Konversiya</div></div>
+        </div>
+        <p style="font-size:11px;color:var(--hint);margin:-4px 0 12px;">${b.approved_days} kunlik tasdiqlangan ma'lumot asosida</p>
+        ${_smKpiBreakdownHtml(b)}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  await load();
+}
+
+async function renderEduManagerScorecardHistoryView(box, teacherId, employeeName) {
+  box.innerHTML = `
+    <h2>📅 ${employeeName} — KPI tarixi</h2>
+    <div class="card">
+      <label>Necha oylik tarix ko'rsatilsin</label>
+      <select id="emHistRange">
+        <option value="3">Oxirgi 3 oy</option>
+        <option value="6" selected>Oxirgi 6 oy</option>
+        <option value="12">Oxirgi 12 oy</option>
+      </select>
+    </div>
+    <div id="emHistList"><div class="center-box"><div class="spinner"></div></div></div>
+    <button class="primary" id="emNewBtn">+ Yangi oy uchun kiritish</button>
+    <div id="emFormWrap"></div>
+  `;
+
+  const rangeSelect = box.querySelector("#emHistRange");
+  const listBox = box.querySelector("#emHistList");
+  let currentHistory = [];
+
+  async function loadHistory() {
+    listBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      currentHistory = await api(`/api/edu-manager-scorecard/history?teacher_id=${teacherId}&months=${rangeSelect.value}`);
+
+      const itemsHtml = currentHistory.map((h) => {
+        const gateOk = h.report_approved && h.data_honest;
+        return `
+        <div class="sc-history-item">
+          <div class="sc-history-info">
+            <div class="sc-history-month">
+              ${h.month} <span class="kpi-chip ${_kpiColorClass(h.kpi_percent)}" style="margin-left:6px;">${h.kpi_percent}%</span>
+              ${!gateOk ? '<span class="badge warn" style="margin-left:6px;">Gate: bloklangan</span>' : ""}
+            </div>
+            <div class="sc-history-mini">
+              Retention ${h.retention !== null ? Math.round(h.retention * 100) : "-"}% · Teacher Perf ${h.teacher_performance ?? "-"} · Occupancy ${h.occupancy !== null ? Math.round(h.occupancy * 100) : "-"}%
+            </div>
+          </div>
+          <div class="sc-history-actions">
+            <button class="mini-btn" data-edit-month="${h.month}">✏️ Tahrirlash</button>
+            <button class="mini-btn" data-delete-month="${h.month}">🗑️ O'chirish</button>
+          </div>
+        </div>
+      `;
+      }).join("");
+
+      listBox.innerHTML = `
+        <div class="card">
+          ${itemsHtml || `<p style="color:var(--hint);font-size:13px;margin:0;">Tanlangan oraliqda hali KPI kiritilmagan</p>`}
+        </div>
+      `;
+
+      listBox.querySelectorAll("[data-edit-month]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const month = btn.dataset.editMonth;
+          const entry = currentHistory.find((h) => h.month === month);
+          renderEduManagerScorecardForm(box.querySelector("#emFormWrap"), teacherId, entry, () => loadHistory());
+        });
+      });
+
+      listBox.querySelectorAll("[data-delete-month]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const month = btn.dataset.deleteMonth;
+          showConfirm(
+            "KPI yozuvini o'chirish",
+            `<b>${employeeName}</b>ning <b>${month}</b> oyi uchun KPI yozuvi butunlay o'chirilsinmi? Bu amalni qaytarib bo'lmaydi.`,
+            async () => {
+              try {
+                await api("/api/edu-manager-scorecard/delete", {
+                  method: "POST",
+                  body: JSON.stringify({ teacher_id: teacherId, month }),
+                });
+                loadHistory();
+              } catch (err) {
+                safeAlert("Xato: " + err.message);
+              }
+            }
+          );
+        });
+      });
+    } catch (err) {
+      listBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  box.querySelector("#emNewBtn").addEventListener("click", () => {
+    renderEduManagerScorecardForm(box.querySelector("#emFormWrap"), teacherId, null, () => loadHistory());
+  });
+
+  rangeSelect.addEventListener("change", loadHistory);
+  await loadHistory();
+}
+
+function renderEduManagerScorecardForm(wrap, teacherId, existing, onSaved) {
+  const isEdit = !!existing;
+  const monthOptions = lastNMonths(6);
+
+  // Backendda 0-1 formatida saqlanadi (masalan 0.96 = 96%), foydalanuvchiga esa % ko'rinishida ko'rsatamiz
+  const pctDisplay = (v) => (v !== null && v !== undefined ? Math.round(v * 10000) / 100 : "");
+
+  wrap.innerHTML = `
+    <h2>${isEdit ? "✏️ Tahrirlash — " + existing.month : "📋 Yangi KPI kiritish"}</h2>
+    <div class="card sc-form">
+      ${isEdit ? "" : `
+        <div class="sc-field">
+          <label>Oy</label>
+          <select id="em_month">
+            ${monthOptions.map((m) => `<option value="${m}">${m}</option>`).join("")}
+          </select>
+        </div>
+      `}
+      <div class="sc-field">
+        <label>🔁 Student Retention (%)</label>
+        <input id="em_retention" type="number" step="0.1" placeholder="masalan: 96" value="${pctDisplay(existing?.retention)}" />
+      </div>
+      <div class="sc-field">
+        <label>👨‍🏫 Teacher Performance (0-100)</label>
+        <input id="em_tp" type="number" step="0.1" placeholder="masalan: 88.5" value="${existing?.teacher_performance ?? ""}" />
+      </div>
+      <div class="sc-field">
+        <label>📈 Student Results o'sishi (%, manfiy ham bo'lishi mumkin)</label>
+        <input id="em_results" type="number" step="0.1" placeholder="masalan: 5" value="${pctDisplay(existing?.student_results)}" />
+      </div>
+      <div class="sc-field">
+        <label>🗓️ Attendance (%)</label>
+        <input id="em_attendance" type="number" step="0.1" placeholder="masalan: 93" value="${pctDisplay(existing?.attendance)}" />
+      </div>
+      <div class="sc-field">
+        <label>📝 Homework Completion (%)</label>
+        <input id="em_homework" type="number" step="0.1" placeholder="masalan: 88" value="${pctDisplay(existing?.homework)}" />
+      </div>
+      <div class="sc-field">
+        <label>🏫 Group Occupancy (%)</label>
+        <input id="em_occupancy" type="number" step="0.1" placeholder="masalan: 92" value="${pctDisplay(existing?.occupancy)}" />
+      </div>
+
+      <div class="sc-field" style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <input id="em_reportApproved" type="checkbox" style="width:auto;margin:0;" ${existing?.report_approved ? "checked" : ""} />
+        <label style="margin:0;">Hisobot tasdiqlangan</label>
+      </div>
+      <div class="sc-field" style="display:flex;align-items:center;gap:8px;">
+        <input id="em_dataHonest" type="checkbox" style="width:auto;margin:0;" ${existing?.data_honest ? "checked" : ""} />
+        <label style="margin:0;">Ma'lumot haqqoniy</label>
+      </div>
+      <p style="font-size:12px;color:var(--hint);margin:6px 0 0;">
+        ⚠️ Agar bu ikkalasidan biri belgilanmasa, KPI ball qanchalik yuqori bo'lmasin, KPI summasi 0 bo'ladi.
+      </p>
+
+      <button class="primary" id="emSaveBtn">Saqlash</button>
+      <button class="secondary" id="emCancelBtn">Bekor qilish</button>
+      <div id="emSaveMsg" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+  `;
+
+  wrap.querySelector("#emCancelBtn").addEventListener("click", () => { wrap.innerHTML = ""; });
+
+  wrap.querySelector("#emSaveBtn").addEventListener("click", async () => {
+    const msg = wrap.querySelector("#emSaveMsg");
+    msg.textContent = "Saqlanmoqda...";
+    const month = isEdit ? existing.month : wrap.querySelector("#em_month").value;
+
+    const pct = (id) => {
+      const v = parseFloat(wrap.querySelector(id).value);
+      return isNaN(v) ? null : v / 100;
+    };
+    const raw = (id) => {
+      const v = parseFloat(wrap.querySelector(id).value);
+      return isNaN(v) ? null : v;
+    };
+
+    try {
+      await api("/api/edu-manager-scorecard", {
+        method: "POST",
+        body: JSON.stringify({
+          teacher_id: teacherId,
+          month: month,
+          retention: pct("#em_retention"),
+          teacher_performance: raw("#em_tp"),
+          student_results: pct("#em_results"),
+          attendance: pct("#em_attendance"),
+          homework: pct("#em_homework"),
+          occupancy: pct("#em_occupancy"),
+          report_approved: wrap.querySelector("#em_reportApproved").checked,
+          data_honest: wrap.querySelector("#em_dataHonest").checked,
+        }),
+      });
+      msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+      setTimeout(() => { if (onSaved) onSaved(); }, 500);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+}
+
+// ---------- TUSHUM TAB (o'qituvchi bo'yicha rentabellik) ----------
+
+async function renderRevenueTab(box) {
+  box.innerHTML = `
+    <div class="tabs" id="revSubTabs">
+      <div class="tab active" data-subtab="entry">📝 Kiritish</div>
+      <div class="tab" data-subtab="history">📅 Tarix</div>
+    </div>
+    <div id="revSubContent"></div>
+  `;
+
+  const subContent = box.querySelector("#revSubContent");
+  let currentSubtab = "entry";
+
+  function renderSub() {
+    subContent.innerHTML = "";
+    if (currentSubtab === "entry") renderRevenueEntry(subContent);
+    else renderRevenueHistory(subContent);
+  }
+
+  box.querySelectorAll("#revSubTabs .tab").forEach((tabBtn) => {
+    tabBtn.addEventListener("click", () => {
+      box.querySelectorAll("#revSubTabs .tab").forEach((x) => x.classList.remove("active"));
+      tabBtn.classList.add("active");
+      currentSubtab = tabBtn.dataset.subtab;
+      renderSub();
+    });
+  });
+
+  renderSub();
+}
+
+async function renderRevenueEntry(box) {
+  box.innerHTML = `
+    <div class="month-picker">
+      <label style="margin:0;">Oy:</label>
+      <select id="rMonth"></select>
+    </div>
+    <div id="rResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#rMonth");
+  lastNMonths(6).forEach((m) => {
+    const opt = document.createElement("option");
+    opt.value = m; opt.textContent = m;
+    select.appendChild(opt);
+  });
+
+  async function load() {
+    const resultBox = box.querySelector("#rResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    const data = await api(`/api/revenue?month=${select.value}`);
+
+    const totalRevenue = data.rows.reduce((s, r) => s + (r.revenue || 0), 0);
+    const totalFix = data.rows.reduce((s, r) => s + r.fix, 0);
+    const totalKpi = data.rows.reduce((s, r) => s + r.kpi_amount, 0);
+    const totalBonus = data.rows.reduce((s, r) => s + r.bonus, 0);
+    const totalPayroll = data.rows.reduce((s, r) => s + r.total_payroll, 0);
+    const avgPercent = totalRevenue > 0 ? Math.round((totalPayroll / totalRevenue) * 1000) / 10 : null;
+
+    const rows = data.rows.map((r) => `
+      <tr>
+        <td>${r.full_name}<br/><span style="color:var(--hint);font-size:11px;">${r.grade || "-"}</span></td>
+        <td><input type="text" inputmode="numeric" value="${r.revenue !== null && r.revenue !== undefined ? _formatThousands(String(Math.round(r.revenue))) : ""}" data-revenue="${r.teacher_id}" style="width:130px;margin:0;" placeholder="0" /></td>
+        <td>${fmt(r.fix)}</td>
+        <td>${fmt(r.kpi_amount)}</td>
+        <td>${fmt(r.bonus)}</td>
+        <td><b>${fmt(r.total_payroll)}</b></td>
+        <td>${r.payroll_percent !== null ? r.payroll_percent + "%" : "-"}</td>
+      </tr>
+    `).join("");
+
+    resultBox.innerHTML = `
+      <h2>📊 Umumiy hisobot</h2>
+      <div class="stat-grid">
+        <div class="stat-mini"><div class="stat-mini-icon">💰</div><div class="stat-mini-num">${fmt(totalRevenue)}</div><div class="stat-mini-label">Jami tushum</div></div>
+        <div class="stat-mini"><div class="stat-mini-icon">💵</div><div class="stat-mini-num">${fmt(totalFix)}</div><div class="stat-mini-label">Jami Fix</div></div>
+        <div class="stat-mini"><div class="stat-mini-icon">🎯</div><div class="stat-mini-num">${fmt(totalKpi)}</div><div class="stat-mini-label">Jami KPI</div></div>
+        <div class="stat-mini"><div class="stat-mini-icon">🎁</div><div class="stat-mini-num">${fmt(totalBonus)}</div><div class="stat-mini-label">Jami Bonus</div></div>
+        <div class="stat-mini"><div class="stat-mini-icon">🧾</div><div class="stat-mini-num">${fmt(totalPayroll)}</div><div class="stat-mini-label">Umumiy ish haqi</div></div>
+        <div class="stat-mini"><div class="stat-mini-icon">📈</div><div class="stat-mini-num">${avgPercent !== null ? avgPercent + "%" : "-"}</div><div class="stat-mini-label">O'rtacha ish haqi foizi</div></div>
+      </div>
+
+      <p style="font-size:12px;color:var(--hint);">O'qituvchining shu oy uchun umumiy tushumini (LMS'dagi ma'lumot asosida) kiriting — tizim ish haqini va uning tushumdan olgan foizini avtomatik hisoblaydi.</p>
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead><tr><th>O'qituvchi</th><th>Tushum</th><th>Fix</th><th>KPI</th><th>Bonus</th><th>Umumiy ish haqi</th><th>Tushumdan ish haqi foizi</th></tr></thead>
+          <tbody>${rows || "<tr><td colspan='7'>Ma'lumot yo'q</td></tr>"}</tbody>
+        </table>
+      </div>
+      <button class="primary" id="saveRevenueBtn">Saqlash</button>
+      <div id="revenueMsg" style="margin-top:8px;font-size:13px;"></div>
+    `;
+
+    resultBox.querySelectorAll("input[data-revenue]").forEach((input) => {
+      _attachMoneyFormatting(input);
+    });
+
+    resultBox.querySelector("#saveRevenueBtn").addEventListener("click", async () => {
+      const msg = resultBox.querySelector("#revenueMsg");
+      msg.textContent = "Saqlanmoqda...";
+      try {
+        const inputs = resultBox.querySelectorAll("input[data-revenue]");
+        for (const input of inputs) {
+          if (input.value === "") continue;
+          const amount = _parseFormattedNumber(input.value);
+          if (amount === null) continue;
+          await api("/api/revenue", {
+            method: "POST",
+            body: JSON.stringify({
+              teacher_id: input.dataset.revenue,
+              month: select.value,
+              amount: amount,
+            }),
+          });
+        }
+        msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+        load();
+      } catch (err) {
+        msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      }
+    });
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+async function renderRevenueHistory(box) {
+  const employees = await api("/api/employees");
+  const eligible = employees.filter((e) => e.role === "Teacher" || e.role === "SubjectTeacher");
+
+  box.innerHTML = `
+    <div class="card">
+      <label>Xodim</label>
+      <select id="revHistEmployee">
+        ${eligible.map((e) => `<option value="${e.teacher_id}">${e.full_name} (${e.grade || e.subject || e.role})</option>`).join("")}
+      </select>
+
+      <label>Necha oylik tarix</label>
+      <select id="revHistRange">
+        <option value="3">Oxirgi 3 oy</option>
+        <option value="6" selected>Oxirgi 6 oy</option>
+        <option value="12">Oxirgi 12 oy</option>
+      </select>
+    </div>
+    <div id="revHistResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const employeeSelect = box.querySelector("#revHistEmployee");
+  const rangeSelect = box.querySelector("#revHistRange");
+  const resultBox = box.querySelector("#revHistResult");
+
+  async function load() {
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const data = await api(`/api/revenue/history?teacher_id=${employeeSelect.value}&months=${rangeSelect.value}`);
+
+      const itemsHtml = data.rows.map((r) => `
+        <div class="sc-history-item">
+          <div class="sc-history-info">
+            <div class="sc-history-month">${r.month}</div>
+            <div class="sc-history-mini">
+              Tushum: ${r.revenue !== null ? fmt(r.revenue) : "kiritilmagan"}
+              ${r.payroll_percent !== null ? ` · Ish haqi foizi: ${r.payroll_percent}%` : ""}
+            </div>
+          </div>
+          <div class="sc-history-actions">
+            <button class="mini-btn" data-edit-month="${r.month}">✏️ Tahrirlash</button>
+          </div>
+        </div>
+        <div id="revEditWrap_${r.month.replace(/[^a-zA-Z0-9]/g, "")}"></div>
+      `).join("");
+
+      resultBox.innerHTML = `<div class="card">${itemsHtml || `<p style="color:var(--hint);font-size:13px;margin:0;">Tanlangan oraliqda ma'lumot yo'q</p>`}</div>`;
+
+      resultBox.querySelectorAll("[data-edit-month]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const month = btn.dataset.editMonth;
+          const row = data.rows.find((r) => r.month === month);
+          const wrap = resultBox.querySelector(`#revEditWrap_${month.replace(/[^a-zA-Z0-9]/g, "")}`);
+
+          if (wrap.dataset.open === "1") {
+            wrap.innerHTML = "";
+            wrap.dataset.open = "0";
+            return;
+          }
+
+          wrap.dataset.open = "1";
+          wrap.innerHTML = `
+            <div class="card" style="margin-top:-4px;margin-bottom:12px;">
+              <label>${month} uchun tushum (so'm)</label>
+              <input type="text" inputmode="numeric" id="revEditInput_${month.replace(/[^a-zA-Z0-9]/g, "")}" value="${row.revenue !== null ? _formatThousands(String(Math.round(row.revenue))) : ""}" placeholder="0" />
+              <button class="primary" id="revEditSave_${month.replace(/[^a-zA-Z0-9]/g, "")}">Saqlash</button>
+              <div id="revEditMsg_${month.replace(/[^a-zA-Z0-9]/g, "")}" style="margin-top:8px;font-size:13px;"></div>
+            </div>
+          `;
+          const safeId = month.replace(/[^a-zA-Z0-9]/g, "");
+          const input = wrap.querySelector(`#revEditInput_${safeId}`);
+          _attachMoneyFormatting(input);
+
+          wrap.querySelector(`#revEditSave_${safeId}`).addEventListener("click", async () => {
+            const msg = wrap.querySelector(`#revEditMsg_${safeId}`);
+            msg.textContent = "Saqlanmoqda...";
+            try {
+              const amount = _parseFormattedNumber(input.value);
+              await api("/api/revenue", {
+                method: "POST",
+                body: JSON.stringify({
+                  teacher_id: employeeSelect.value,
+                  month: month,
+                  amount: amount || 0,
+                }),
+              });
+              msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+              load();
+            } catch (err) {
+              msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+            }
+          });
+        });
+      });
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  employeeSelect.addEventListener("change", load);
+  rangeSelect.addEventListener("change", load);
+  load();
+}
+
+// ---------- EMPLOYEES TAB ----------
+
+async function renderEmployeesTab(box, me) {
+  await renderEmployeesList(box, me);
+}
+
+async function renderEmployeesList(box, me) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  const employees = await api("/api/employees");
+
+  const rows = employees.map((e) => `
+    <tr>
+      <td>${e.full_name}<br/><span style="color:var(--hint);font-size:11px;">${e.teacher_id}</span></td>
+      <td>${e.role}</td>
+      <td>${e.grade || "-"}</td>
+      <td>${e.workload_rate}</td>
+      <td>${e.telegram_id ? '<span class="badge ok">Bog\'langan</span>' : '<span class="badge warn">Bog\'lanmagan</span>'}</td>
+      <td style="white-space:nowrap;">
+        <button class="mini-btn" data-edit="${e.teacher_id}">✏️</button>
+        <button class="mini-btn" data-link="${e.teacher_id}">🔗</button>
+        <button class="mini-btn" data-deactivate="${e.teacher_id}">🗑️</button>
+      </td>
+    </tr>
+  `).join("");
+
+  box.innerHTML = `
+    <div class="card" style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>Ism</th><th>Rol</th><th>Grade</th><th>Stavka</th><th>Holat</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+
+    <h2>Yangi xodim qo'shish</h2>
+    <div class="card">
+      <label>Familya</label>
+      <input id="e_lastname" type="text" placeholder="masalan: Yo'ldoshev" />
+
+      <label>Ism</label>
+      <input id="e_firstname" type="text" placeholder="masalan: Bobur" />
+
+      <label>Otchestva (ixtiyoriy)</label>
+      <input id="e_patronymic" type="text" placeholder="masalan: Alisher o'g'li" />
+
+      <label>Rol</label>
+      <select id="e_role">
+        <option value="Teacher">Teacher (grade bo'yicha)</option>
+        <option value="SubjectTeacher">Fan o'qituvchisi (tushum foizi bo'yicha)</option>
+        <option value="EduManager">Edu Manager</option>
+        <option value="Director">Director</option>
+        <option value="Administrator">Administrator</option>
+        <option value="SalesManager">Sotuv menejeri</option>
+        <option value="CEO">CEO</option>
+      </select>
+
+      <div id="e_teacherFields" style="display:none;">
+        <label>Teacher ID (unikal, masalan T011)</label>
+        <input id="e_id" type="text" />
+
+        <label>Grade</label>
+        <select id="e_grade">
+          <option value="">-</option>
+          <option value="T0">T0</option>
+          <option value="T1">T1</option>
+          <option value="T2">T2</option>
+          <option value="T3">T3</option>
+          <option value="T4">T4</option>
+          <option value="T5">T5</option>
+        </select>
+      </div>
+
+      <div id="e_subjectFields" style="display:none;">
+        <label>Fan nomi (masalan: Matematika, Koreys tili)</label>
+        <input id="e_subject" type="text" placeholder="masalan: Matematika" />
+
+        <label>Tushumdan ulush foizi (%)</label>
+        <input id="e_revenuePercent" type="number" step="1" min="0" max="100" placeholder="masalan: 40" />
+        <p style="font-size:12px;color:var(--hint);margin:-4px 0 10px;">
+          Har oy Tushum bo'limida kiritilgan summadan shu foiz avtomatik xarajat/rashchyot sifatida hisoblanadi.
+        </p>
+      </div>
+
+      <div id="e_staffFields" style="display:none;">
+        <label>Oylik maosh (so'm)</label>
+        <input id="e_salary" type="text" inputmode="numeric" placeholder="masalan: 4 500 000" />
+      </div>
+
+      <label>Ish stavkasi (0.25 / 0.5 / 0.75 / 1.0)</label>
+      <input id="e_workload" type="number" step="0.05" min="0" value="1.0" />
+
+      <label>Tel raqam</label>
+      <input id="e_phone" type="tel" value="+998 " />
+
+      <button class="primary" id="addEmpBtn">Qo'shish</button>
+      <div id="addEmpMsg" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+
+    <p style="font-size:12px;color:var(--hint);padding:0 4px;">
+      💡 Xodim qo'shilgach, chiqqan shaxsiy havolani nusxalab, o'sha xodimga yuboring.
+      Xodim havolani ochib botni ishga tushirsa, tizim uni avtomatik taniydi.
+    </p>
+  `;
+
+  const roleSelect = box.querySelector("#e_role");
+  const teacherFieldsDiv = box.querySelector("#e_teacherFields");
+  const subjectFieldsDiv = box.querySelector("#e_subjectFields");
+  const staffFieldsDiv = box.querySelector("#e_staffFields");
+  const salaryInput = box.querySelector("#e_salary");
+  _attachMoneyFormatting(salaryInput);
+
+  function toggleRoleFields() {
+    const role = roleSelect.value;
+    teacherFieldsDiv.style.display = role === "Teacher" ? "block" : "none";
+    subjectFieldsDiv.style.display = role === "SubjectTeacher" ? "block" : "none";
+    staffFieldsDiv.style.display = (role !== "Teacher" && role !== "SubjectTeacher") ? "block" : "none";
+  }
+  roleSelect.addEventListener("change", toggleRoleFields);
+  toggleRoleFields();
+
+  const phoneInput = box.querySelector("#e_phone");
+  phoneInput.addEventListener("input", () => {
+    phoneInput.value = _formatUzPhone(phoneInput.value);
+  });
+
+  box.querySelector("#addEmpBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#addEmpMsg");
+
+    const lastname = box.querySelector("#e_lastname").value.trim();
+    const firstname = box.querySelector("#e_firstname").value.trim();
+    const patronymic = box.querySelector("#e_patronymic").value.trim();
+    const role = roleSelect.value;
+
+    if (!lastname || !firstname) {
+      msg.innerHTML = `<span class="badge warn">❌ Familya va Ism to'ldirilishi shart</span>`;
+      return;
+    }
+
+    let teacherId;
+    let grade = null;
+    let fixedSalary = null;
+    let subject = null;
+    let revenuePercent = null;
+
+    if (role === "Teacher") {
+      teacherId = box.querySelector("#e_id").value.trim();
+      grade = box.querySelector("#e_grade").value || null;
+      if (!teacherId) {
+        msg.innerHTML = `<span class="badge warn">❌ Teacher ID to'ldirilishi shart</span>`;
+        return;
+      }
+    } else if (role === "SubjectTeacher") {
+      const roleCode = "SUB";
+      teacherId = `${roleCode}-${Date.now()}`;
+      subject = box.querySelector("#e_subject").value.trim() || null;
+      revenuePercent = parseFloat(box.querySelector("#e_revenuePercent").value);
+      if (!subject) {
+        msg.innerHTML = `<span class="badge warn">❌ Fan nomi to'ldirilishi shart</span>`;
+        return;
+      }
+      if (isNaN(revenuePercent)) {
+        msg.innerHTML = `<span class="badge warn">❌ Ulush foizi to'ldirilishi shart</span>`;
+        return;
+      }
+    } else {
+      const roleCode = { Director: "DIR", EduManager: "EDU", CEO: "CEO", Administrator: "ADM", SalesManager: "SLS" }[role] || "EMP";
+      teacherId = `${roleCode}-${Date.now()}`;
+      fixedSalary = _parseFormattedNumber(salaryInput.value);
+    }
+
+    const fullName = [lastname, firstname, patronymic].filter(Boolean).join(" ");
+    const phone = _parseUzPhone(phoneInput.value);
+
+    msg.textContent = "Qo'shilmoqda...";
+    try {
+      const res = await api("/api/employees", {
+        method: "POST",
+        body: JSON.stringify({
+          teacher_id: teacherId,
+          full_name: fullName,
+          role: role,
+          grade: grade,
+          workload_rate: parseFloat(box.querySelector("#e_workload").value) || 1.0,
+          phone: phone,
+          fixed_salary: fixedSalary,
+          subject: subject,
+          revenue_percent: revenuePercent,
+        }),
+      });
+      msg.innerHTML = `<span class="badge ok">✅ Qo'shildi</span>`;
+      if (res.link) showLinkModal(res.link, fullName);
+      setTimeout(() => renderEmployeesList(box, me), 700);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+
+  box.querySelectorAll("[data-edit]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const emp = employees.find((e) => e.teacher_id === btn.dataset.edit);
+      renderEmployeeEditForm(box, me, emp);
+    });
+  });
+
+  box.querySelectorAll("[data-link]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      try {
+        const res = await api(`/api/employees/${btn.dataset.link}/link`);
+        if (res.linked) {
+          safeAlert("Bu xodim allaqachon tizimga bog'langan.");
+        } else {
+          const emp = employees.find((e) => e.teacher_id === btn.dataset.link);
+          showLinkModal(res.link, emp.full_name);
+        }
+      } catch (err) {
+        safeAlert("Xato: " + err.message);
+      }
+    });
+  });
+
+  box.querySelectorAll("[data-deactivate]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const emp = employees.find((e) => e.teacher_id === btn.dataset.deactivate);
+      showConfirm(
+        "Xodimni faolsizlantirish",
+        `<b>${emp.full_name}</b>ni faolsizlantirmoqchimisiz? U ro'yxatlarda ko'rinmay qoladi, lekin tarixiy moliya ma'lumotlari saqlanib qoladi.`,
+        async () => {
+          await api(`/api/employees/${emp.teacher_id}/deactivate`, { method: "POST" });
+          renderEmployeesList(box, me);
+        }
+      );
+    });
+  });
+}
+
+async function _loadTeacherGroupInfo(box, emp) {
+  try {
+    const s = await api("/api/settings");
+    const groupsPerStavka = s.groups_per_stavka || 6;
+    const history = await api(`/api/employees/${emp.teacher_id}/grade-history`);
+    const currentGroups = history.length && history[0].group_count !== null
+      ? history[0].group_count
+      : Math.round((emp.workload_rate || 0) * groupsPerStavka);
+    const infoEl = box.querySelector("#ed_currentGroupsInfo");
+    if (infoEl) {
+      infoEl.innerHTML = `📊 Joriy holat: <b>${currentGroups} ta guruh</b> (${(currentGroups / groupsPerStavka).toFixed(3)} stavka) · 1 stavka = ${groupsPerStavka} guruh`;
+    }
+    const histCard = box.querySelector("#ed_gradeHistoryCard");
+    if (histCard) {
+      histCard.innerHTML = history.length
+        ? history.map((h) => `
+            <div class="row">
+              <span class="label">${h.effective_date} dan</span>
+              <span class="value">${h.grade} · ${Number(h.workload_rate).toFixed(3)} stavka${h.group_count !== null ? ` (${h.group_count} guruh)` : ""}</span>
+            </div>
+            ${h.change_note ? `<p style="font-size:11px;color:var(--hint);margin:-4px 0 8px;">${h.change_note}</p>` : ""}
+            <button class="mini-btn" data-delete-history="${h.id}" style="margin-bottom:10px;">🗑️ Bu yozuvni o'chirish</button>
+          `).join("")
+        : `<p style="font-size:12px;color:var(--hint);margin:0;">Tarix hali yo'q</p>`;
+
+      histCard.querySelectorAll("[data-delete-history]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const entryId = btn.dataset.deleteHistory;
+          showConfirm(
+            "Yozuvni o'chirish",
+            "Bu Grade/Stavka tarixi yozuvi butunlay o'chirilsinmi? Bu amalni qaytarib bo'lmaydi.",
+            async () => {
+              try {
+                await api(`/api/employees/${emp.teacher_id}/grade-history/${entryId}/delete`, { method: "POST" });
+                await _loadTeacherGroupInfo(box, emp);
+              } catch (err) {
+                safeAlert("Xato: " + err.message);
+              }
+            }
+          );
+        });
+      });
+    }
+  } catch (err) {
+    const histCard = box.querySelector("#ed_gradeHistoryCard");
+    if (histCard) histCard.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+async function _handleGroupChange(box, emp, me, direction) {
+  const msg = box.querySelector("#ed_groupMsg");
+  const date = box.querySelector("#ed_groupDate").value;
+  const count = parseInt(box.querySelector("#ed_groupCount").value, 10) || 1;
+  const note = box.querySelector("#ed_groupNote").value.trim() || null;
+  const deltaGroups = direction * count;
+
+  const verb = direction > 0 ? "qo'shilsinmi" : "ayirilsinmi";
+  showConfirm(
+    "Guruh o'zgarishini tasdiqlang",
+    `<b>${emp.full_name}</b>ga <b>${date}</b> sanasidan boshlab <b>${count} ta guruh</b> ${verb}? Bu shu sanadan keyingi kunlar uchun stavkani avtomatik qayta hisoblaydi.`,
+    async () => {
+      msg.textContent = "Saqlanmoqda...";
+      try {
+        const res = await api(`/api/employees/${emp.teacher_id}/group-change`, {
+          method: "POST",
+          body: JSON.stringify({ effective_date: date, delta_groups: deltaGroups, note }),
+        });
+        msg.innerHTML = `<span class="badge ok">✅ Yangi holat: ${res.new_group_count} ta guruh (${res.new_workload_rate} stavka)</span>`;
+        emp.workload_rate = res.new_workload_rate;
+        box.querySelector("#ed_workload").value = res.new_workload_rate;
+        box.querySelector("#ed_groupNote").value = "";
+        await _loadTeacherGroupInfo(box, emp);
+      } catch (err) {
+        msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      }
+    }
+  );
+}
+
+function renderEmployeeEditForm(box, me, emp) {
+  const isTeacher = emp.role === "Teacher";
+  const isSubjectTeacher = emp.role === "SubjectTeacher";
+  const isStaff = !isTeacher && !isSubjectTeacher;
+
+  box.innerHTML = `
+    <button class="back-btn" id="backBtn">← Orqaga</button>
+    <h2>${emp.full_name}ni tahrirlash</h2>
+    <div class="card">
+      <label>To'liq ism</label>
+      <input id="ed_name" type="text" value="${emp.full_name}" />
+
+      ${isTeacher ? `
+        <label>Grade</label>
+        <select id="ed_grade">
+          <option value="">-</option>
+          ${["T0", "T1", "T2", "T3", "T4", "T5"].map((g) => `<option value="${g}" ${emp.grade === g ? "selected" : ""}>${g}</option>`).join("")}
+        </select>
+      ` : isSubjectTeacher ? `
+        <label>Fan nomi</label>
+        <input id="ed_subject" type="text" value="${emp.subject || ""}" placeholder="masalan: Matematika" />
+
+        <label>Tushumdan ulush foizi (%)</label>
+        <input id="ed_revenuePercent" type="number" step="1" min="0" max="100" value="${emp.revenue_percent ?? ""}" />
+      ` : `
+        <label>Oylik maosh (so'm)</label>
+        <input id="ed_salary" type="text" inputmode="numeric" value="${emp.fixed_salary ? _formatThousands(String(Math.round(emp.fixed_salary))) : ""}" placeholder="masalan: 4 500 000" />
+      `}
+
+      <label>Stavka</label>
+      <input id="ed_workload" type="number" step="0.05" value="${emp.workload_rate}" />
+
+      ${isTeacher ? `
+        <label>Qaysi sanadan kuchga kirsin?</label>
+        <input id="ed_effectiveDate" type="date" value="${_todayDateStr()}" />
+        <p style="font-size:11px;color:var(--hint);margin:-4px 0 10px;">
+          Grade/Stavka o'zgarishi faqat shu sanadan boshlab qo'llanadi — oldingi kunlarning hisob-kitobi o'zgarmaydi.
+          Agar oy ICHIDA o'zgartirsangiz, Fix shu oy uchun kunlarga mutanosib (prorata) hisoblanadi.
+        </p>
+      ` : ""}
+
+      <button class="primary" id="ed_saveBtn">Saqlash</button>
+      <div id="ed_msg" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+
+    ${isTeacher ? `
+      <h2>🔀 Guruh qo'shish/ayirish (tezkor)</h2>
+      <div class="card">
+        <p style="font-size:12px;color:var(--hint);margin:0 0 10px;" id="ed_currentGroupsInfo">Joriy holat yuklanmoqda...</p>
+        <label>Sana</label>
+        <input id="ed_groupDate" type="date" value="${_todayDateStr()}" />
+        <label>Nechta guruh</label>
+        <input id="ed_groupCount" type="number" min="1" step="1" value="1" />
+        <label>Izoh (ixtiyoriy)</label>
+        <input id="ed_groupNote" type="text" placeholder="masalan: T2-Beginner guruhi qo'shildi" />
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="secondary" id="ed_groupRemoveBtn" style="flex:1;">− Ayirish</button>
+          <button class="primary" id="ed_groupAddBtn" style="flex:1;">+ Qo'shish</button>
+        </div>
+        <div id="ed_groupMsg" style="margin-top:8px;font-size:13px;"></div>
+      </div>
+
+      <h2>Grade/Stavka tarixi</h2>
+      <div class="card" id="ed_gradeHistoryCard"><div class="center-box"><div class="spinner"></div></div></div>
+    ` : ""}
+
+    <h2>Kirish havolasi</h2>
+    <div class="card">
+      <p style="font-size:13px;color:var(--hint);margin-top:0;">
+        Agar xodim havolasini yo'qotgan yoki qurilmasini almashtirgan bo'lsa, yangi havola generatsiya qiling.
+        Eski havola va joriy bog'lanish shu zahoti bekor bo'ladi.
+      </p>
+      <button class="secondary" id="ed_regenLink">🔗 Yangi havola olish</button>
+    </div>
+  `;
+
+  if (isTeacher) {
+    _loadTeacherGroupInfo(box, emp);
+
+    box.querySelector("#ed_groupAddBtn").addEventListener("click", () => _handleGroupChange(box, emp, me, 1));
+    box.querySelector("#ed_groupRemoveBtn").addEventListener("click", () => _handleGroupChange(box, emp, me, -1));
+  }
+
+  if (isStaff) {
+    _attachMoneyFormatting(box.querySelector("#ed_salary"));
+  }
+
+  box.querySelector("#backBtn").addEventListener("click", () => renderEmployeesList(box, me));
+
+  box.querySelector("#ed_saveBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#ed_msg");
+    msg.textContent = "Saqlanmoqda...";
+    try {
+      const payload = {
+        full_name: box.querySelector("#ed_name").value.trim(),
+        workload_rate: parseFloat(box.querySelector("#ed_workload").value),
+      };
+      if (isTeacher) {
+        payload.grade = box.querySelector("#ed_grade").value || null;
+        payload.effective_date = box.querySelector("#ed_effectiveDate").value;
+      } else if (isSubjectTeacher) {
+        payload.subject = box.querySelector("#ed_subject").value.trim();
+        const pct = parseFloat(box.querySelector("#ed_revenuePercent").value);
+        if (!isNaN(pct)) payload.revenue_percent = pct;
+      } else {
+        payload.fixed_salary = _parseFormattedNumber(box.querySelector("#ed_salary").value);
+      }
+      await api(`/api/employees/${emp.teacher_id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+      setTimeout(() => renderEmployeesList(box, me), 700);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+
+  box.querySelector("#ed_regenLink").addEventListener("click", () => {
+    showConfirm(
+      "Havolani yangilash",
+      `<b>${emp.full_name}</b>ning eski havolasi (va joriy bog'lanishi bo'lsa, u ham) bekor qilinib, yangi havola yaratiladi. Davom etasizmi?`,
+      async () => {
+        try {
+          const res = await api(`/api/employees/${emp.teacher_id}/link/regenerate`, { method: "POST" });
+          showLinkModal(res.link, emp.full_name);
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      }
+    );
+  });
+}
+
+// ---------- REPORTS TAB (Hisobotlar) ----------
+
+async function renderReportsTab(box) {
+  renderReportsHome(box);
+}
+
+function renderReportsHome(box) {
+  box.innerHTML = `
+    <div class="menu-grid">
+      <div class="menu-card" data-nav="teacher">
+        <div class="menu-icon">👨‍🏫</div>
+        <div class="menu-text">
+          <div class="menu-label">O'qituvchi hisobi</div>
+          <div class="menu-desc">Fix, KPI, bonus, stavka va moliyaviy tarix</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="scorecard">
+        <div class="menu-icon">📇</div>
+        <div class="menu-text">
+          <div class="menu-label">Scorecard hisobotlari</div>
+          <div class="menu-desc">Oy bo'yicha, har bir KPI yo'nalishida o'rtacha ko'rsatkich</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="company">
+        <div class="menu-icon">🏢</div>
+        <div class="menu-text">
+          <div class="menu-label">Kompaniya</div>
+          <div class="menu-desc">Sana oralig'i bo'yicha umumiy ko'rsatkichlar</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+      <div class="menu-card" data-nav="tasks">
+        <div class="menu-icon">📋</div>
+        <div class="menu-text">
+          <div class="menu-label">Topshiriqlar tarixi</div>
+          <div class="menu-desc">Rollar bo'yicha bajarilgan/bajarilmagan topshiriqlar</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
+    </div>
+  `;
+
+  box.querySelectorAll("[data-nav]").forEach((card) => {
+    card.addEventListener("click", () => {
+      if (card.dataset.nav === "teacher") renderTeacherReportSection(box);
+      else if (card.dataset.nav === "scorecard") renderScorecardReportSection(box);
+      else if (card.dataset.nav === "tasks") renderTasksReportSection(box);
+      else renderCompanyReportSection(box);
+    });
+  });
+}
+
+async function renderTasksReportSection(box) {
+  box.innerHTML = `<button class="back-btn" id="trBackBtn">← Orqaga</button><div id="trInner"></div>`;
+  box.querySelector("#trBackBtn").addEventListener("click", () => renderReportsHome(box));
+  await renderTasksReportContent(box.querySelector("#trInner"));
+}
+
+async function renderTasksReportContent(box) {
+  const today = _todayDateStr();
+  const monthAgo = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  box.innerHTML = `
+    <h2>📋 Topshiriqlar tarixi</h2>
+    <div class="card">
+      <label>Boshlanish sanasi</label>
+      <input type="date" id="trStart" value="${monthAgo}" max="${today}" />
+      <label>Tugash sanasi</label>
+      <input type="date" id="trEnd" value="${today}" max="${today}" />
+    </div>
+    <div id="trResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const startInput = box.querySelector("#trStart");
+  const endInput = box.querySelector("#trEnd");
+
+  async function load() {
+    const resultBox = box.querySelector("#trResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/reports/tasks-summary?start=${startInput.value}&end=${endInput.value}`);
+
+      const overallHtml = `
+        <div class="stat-grid" style="grid-template-columns: repeat(4, 1fr);">
+          <div class="stat-mini"><div class="stat-mini-icon">📋</div><div class="stat-mini-num">${d.overall.total}</div><div class="stat-mini-label">Jami</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">✅</div><div class="stat-mini-num" style="color:var(--green);">${d.overall.done}</div><div class="stat-mini-label">Bajarilgan</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">👁️</div><div class="stat-mini-num" style="color:#a6790a;">${d.overall.in_progress}</div><div class="stat-mini-label">Jarayonda</div></div>
+          <div class="stat-mini"><div class="stat-mini-icon">🆕</div><div class="stat-mini-num" style="color:var(--red);">${d.overall.not_done}</div><div class="stat-mini-label">Bajarilmagan</div></div>
+        </div>
+        ${d.overall.total_penalty > 0 ? `
+          <div class="total-box" style="background:linear-gradient(135deg,#e5484d,#b8302f);">
+            <div class="caption">⚠️ Jami jarima (${d.overall.overdue} ta muddati o'tgan topshiriq)</div>
+            <div class="amount">${fmt(d.overall.total_penalty)}</div>
+          </div>
+        ` : ""}
+      `;
+
+      const roleSectionsHtml = d.by_role.length
+        ? d.by_role.map((r) => {
+            const donePct = r.total > 0 ? Math.round((r.done / r.total) * 100) : 0;
+            const employeesHtml = r.employees.length
+              ? r.employees.map((e) => {
+                  const isGood = e.pending === 0;
+                  return `
+                    <div class="task-report-emp-row">
+                      <span class="task-report-emp-name">${isGood ? "✅" : "⚠️"} ${e.full_name}</span>
+                      <span class="task-report-emp-stats">${e.done}/${e.assigned} bajargan${e.pending > 0 ? `, <b style="color:var(--red);">${e.pending} kutilmoqda</b>` : ""}${e.total_penalty > 0 ? `<br/><span style="color:var(--red);font-size:11px;">⚠️ Jarima: ${fmt(e.total_penalty)}</span>` : ""}</span>
+                    </div>
+                  `;
+                }).join("")
+              : `<p style="font-size:12px;color:var(--hint);margin:4px 0;">Aniq xodimga yuborilgan topshiriq yo'q</p>`;
+
+            return `
+              <div class="card">
+                <div class="task-report-role-head">
+                  <span class="task-report-role-name">${r.role_label}</span>
+                  <span class="task-report-role-total">${r.total} ta topshiriq</span>
+                </div>
+                <div class="compare-bar-track" style="margin-bottom:10px;">
+                  <div class="compare-bar-fill revenue" style="width:${donePct}%;"></div>
+                </div>
+                <div class="task-report-mini-stats">
+                  <span>✅ ${r.done} bajarilgan</span>
+                  <span>👁️ ${r.in_progress} jarayonda</span>
+                  <span>🆕 ${r.not_done} bajarilmagan</span>
+                </div>
+                ${r.total_penalty > 0 ? `<p style="font-size:12px;color:var(--red);margin:6px 0;">⚠️ Jarima (${r.penalty_rate}/dona × ${r.overdue} ta muddati o'tgan) = <b>${fmt(r.total_penalty)}</b></p>` : ""}
+                <div class="task-report-employees">${employeesHtml}</div>
+              </div>
+            `;
+          }).join("")
+        : `<p style="color:var(--hint);font-size:13px;text-align:center;padding:20px 0;">Tanlangan oraliqda topshiriq topilmadi</p>`;
+
+      resultBox.innerHTML = `
+        ${overallHtml}
+        <h2>Rollar bo'yicha</h2>
+        ${roleSectionsHtml}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  startInput.addEventListener("change", load);
+  endInput.addEventListener("change", load);
+  await load();
+}
+
+async function renderScorecardReportSection(box) {
+  box.innerHTML = `<button class="back-btn" id="scrBackBtn">← Orqaga</button><div id="scrInner"></div>`;
+  box.querySelector("#scrBackBtn").addEventListener("click", () => renderReportsHome(box));
+  await renderScorecardReportContent(box.querySelector("#scrInner"));
+}
+
+async function renderScorecardReportContent(box) {
+  box.innerHTML = `
+    <div id="scrMainWrap"></div>
+  `;
+  await renderScorecardReportMain(box.querySelector("#scrMainWrap"));
+}
+
+async function renderScorecardReportMain(box, selectedMonth) {
+  box.innerHTML = `
+    <h2>📇 Scorecard hisobotlari</h2>
+    <div class="month-picker">
+      <label style="margin:0;">Oy:</label>
+      <select id="scrMonth">
+        ${lastNMonths(6).map((m) => `<option value="${m}" ${m === selectedMonth ? "selected" : ""}>${m}</option>`).join("")}
+      </select>
+    </div>
+    <div id="scrResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const select = box.querySelector("#scrMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#scrResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/reports/scorecard-summary?month=${select.value}`);
+
+      const missingHtml = d.missing_scorecard.length
+        ? `<div class="gate-warning">⚠️ Scorecard kiritilmagan: ${d.missing_scorecard.map((m) => m.full_name).join(", ")}</div>`
+        : "";
+
+      const criteriaHtml = d.criteria.map((c) => {
+        const pct = c.avg_percent;
+        const colorClass = pct === null ? "" : _kpiColorClass(pct);
+        const barColor = colorClass === "green" ? "var(--green)" : colorClass === "yellow" ? "#e8a33d" : "var(--red)";
+        const gateHtml = c.gate > 0
+          ? `<span class="criterion-gate-chip ${c.below_gate_count > 0 ? "criterion-gate-warn" : ""}">Gate ${c.gate}%${c.below_gate_count > 0 ? ` · ${c.below_gate_count} kishi past` : ""}</span>`
+          : "";
+        return `
+          <div class="criterion-row criterion-row-clickable" data-criterion="${c.key}" data-label="${c.label}">
+            <div class="criterion-header">
+              <span class="criterion-label">${c.label}</span>
+              <span class="kpi-chip ${colorClass || "red"}">${pct !== null ? pct + "%" : "-"}</span>
+              <span class="criterion-arrow">›</span>
+            </div>
+            <div class="criterion-bar-track">
+              <div class="criterion-bar-fill" style="width:${pct !== null ? pct : 0}%;background:${pct !== null ? barColor : "#e5e5ea"};"></div>
+            </div>
+            <div class="criterion-sub">O'rtacha ball: ${c.avg_ball !== null ? c.avg_ball : "-"} / ${c.max_ball} · Xom o'rtacha: ${c.avg_raw_percent !== null ? c.avg_raw_percent + "%" : "-"} · Batafsil uchun bosing</div>
+            ${gateHtml ? `<div style="margin-top:6px;">${gateHtml}</div>` : ""}
+          </div>
+        `;
+      }).join("");
+
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${d.month} — O'rtacha umumiy KPI foizi (${d.teacher_count} o'qituvchi bo'yicha)</div>
+          <div class="amount">${d.avg_kpi_percent !== null ? d.avg_kpi_percent + "%" : "-"}</div>
+        </div>
+        ${missingHtml}
+        <h2>Mezonlar bo'yicha o'rtacha</h2>
+        <div class="card">
+          ${criteriaHtml}
+        </div>
+      `;
+
+      resultBox.querySelectorAll("[data-criterion]").forEach((rowEl) => {
+        rowEl.addEventListener("click", () => {
+          const critInfo = d.criteria.find((c) => c.key === rowEl.dataset.criterion);
+          renderScorecardCriterionDetail(
+            box, rowEl.dataset.criterion, rowEl.dataset.label, d.month, d.teachers, critInfo ? critInfo.gate : 0
+          );
+        });
+      });
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
+  load();
+}
+
+function renderScorecardCriterionDetail(box, criterionKey, criterionLabel, month, teachers, gate) {
+  const key = `${criterionKey}_percent`;
+  const rawKey = `${criterionKey}_raw_percent`;
+  const belowGateKey = `${criterionKey}_below_gate`;
+  const ranked = [...teachers].sort((a, b) => b[key] - a[key]);
+  const medals = ["🥇", "🥈", "🥉"];
+
+  const rowsHtml = ranked.map((t, i) => {
+    const pct = t[key];
+    const rawPct = t[rawKey];
+    const isBelowGate = t[belowGateKey];
+    const colorClass = _kpiColorClass(pct);
+    return `
+      <div class="criterion-rank-row ${isBelowGate ? "criterion-rank-below-gate" : ""}">
+        <div class="criterion-rank-num">${medals[i] || (i + 1)}</div>
+        <div class="criterion-rank-name">
+          ${t.full_name}
+          ${isBelowGate ? `<span class="criterion-gate-flag">⚠️ Gate ostida</span>` : ""}
+          <div class="criterion-rank-raw">Xom: ${rawPct}%</div>
+        </div>
+        <div class="criterion-rank-percent kpi-chip ${colorClass}">${pct}%</div>
+      </div>
+    `;
+  }).join("");
+
+  box.innerHTML = `
+    <button class="back-btn" id="critBackBtn">← Orqaga</button>
+    <h2>${criterionLabel} — ${month}</h2>
+    <p style="font-size:12px;color:var(--hint);margin-top:-8px;">
+      O'qituvchilar eng yuqori natijadan pastga qarab tartiblangan. Har birida ball asosidagi foiz
+      (katta) va xom kiritilgan qiymat (kichik) ko'rsatiladi.
+      ${gate > 0 ? `Gate chegarasi: <b>${gate}%</b> (xom qiymat bo'yicha) — pastdagilar belgilangan.` : ""}
+    </p>
+    <div class="card">
+      ${rowsHtml || `<p style="color:var(--hint);font-size:13px;margin:0;">Ma'lumot yo'q</p>`}
+    </div>
+  `;
+
+  box.querySelector("#critBackBtn").addEventListener("click", () => renderScorecardReportMain(box, month));
+}
+
+async function renderTeacherReportSection(box) {
+  box.innerHTML = `
+    <button class="back-btn" id="repBackHome">← Orqaga</button>
+    <div id="repInner"></div>
+  `;
+  box.querySelector("#repBackHome").addEventListener("click", () => renderReportsHome(box));
+  await renderReportsSummary(box.querySelector("#repInner"));
+}
+
+async function renderCompanyReportSection(box) {
+  box.innerHTML = `
+    <button class="back-btn" id="compBackHome">← Orqaga</button>
+    <div id="compInner"></div>
+  `;
+  box.querySelector("#compBackHome").addEventListener("click", () => renderReportsHome(box));
+  await renderCompanyRangeReport(box.querySelector("#compInner"));
+}
+
+function _defaultRangeDates() {
+  const end = _todayStr();
+  const d = new Date();
+  d.setDate(d.getDate() - 6);
+  const start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return { start, end };
+}
+
+async function renderCompanyRangeReport(box) {
+  const { start, end } = _defaultRangeDates();
+
+  box.innerHTML = `
+    <div class="card">
+      <label>Boshlanish sanasi</label>
+      <input type="date" id="crStart" value="${start}" />
+      <label>Tugash sanasi</label>
+      <input type="date" id="crEnd" value="${end}" />
+    </div>
+    <div id="crResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const startInput = box.querySelector("#crStart");
+  const endInput = box.querySelector("#crEnd");
+
+  async function load() {
+    const resultBox = box.querySelector("#crResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/company-metrics/range?start=${startInput.value}&end=${endInput.value}`);
+
+      if (d.days_with_data === 0) {
+        resultBox.innerHTML = `<p style="color:var(--hint);font-size:13px;">Tanlangan oraliqda ma'lumot kiritilmagan</p>`;
+        return;
+      }
+
+      const growthHtml = d.aggregate_growth !== null
+        ? `
+          <div class="growth-banner ${d.aggregate_growth >= 0 ? "growth-up" : "growth-down"}">
+            <span class="growth-icon">${d.aggregate_growth >= 0 ? "📈" : "📉"}</span>
+            <span class="growth-text">${d.aggregate_growth >= 0 ? "O'sish" : "Tushish"}: ${d.aggregate_growth > 0 ? "+" : ""}${d.aggregate_growth} ta o'quvchi</span>
+          </div>
+        `
+        : "";
+
+      const dailyRows = d.daily.map((r) => {
+        const chip = r.growth === null
+          ? ""
+          : `<span class="growth-chip ${r.growth >= 0 ? "up" : "down"}">${r.growth >= 0 ? "▲" : "▼"} ${r.growth}</span>`;
+        return `
+          <div class="cm-history-item">
+            <div class="cm-history-date">${r.date}</div>
+            <div class="cm-history-mid">
+              <span class="cm-history-label">Tushum:</span> ${fmt(r.total_revenue)}
+              <span class="cm-history-label" style="margin-left:8px;">Xarajat:</span> ${fmt(r.total_expense)}
+            </div>
+            ${chip}
+          </div>
+        `;
+      }).join("");
+
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${d.start} — ${d.end} (${d.days_with_data} kun ma'lumot bilan) — sof foyda</div>
+          <div class="amount">${fmt(d.total_profit)}</div>
+        </div>
+        ${growthHtml}
+
+        <h2>💰 Moliya</h2>
+        <div class="dash-grid">
+          <div class="dash-card"><div class="dash-num">${fmt(d.total_revenue)}</div><div class="dash-label">Jami tushum</div></div>
+          <div class="dash-card"><div class="dash-num">${fmt(d.total_expense)}</div><div class="dash-label">Jami xarajat</div></div>
+        </div>
+
+        <h2>🎒 Talabalar harakati</h2>
+        <div class="dash-grid">
+          <div class="dash-card"><div class="dash-num">${d.sums.new_admissions}</div><div class="dash-label">Yangi qabul</div></div>
+          <div class="dash-card"><div class="dash-num">${d.sums.sales_count}</div><div class="dash-label">Sotuv</div></div>
+          <div class="dash-card"><div class="dash-num">${d.sums.left_count}</div><div class="dash-label">Chiqib ketgan</div></div>
+          <div class="dash-card"><div class="dash-num">${d.sums.frozen_count}</div><div class="dash-label">Muzlatilgan</div></div>
+          <div class="dash-card"><div class="dash-num">${d.sums.trial_count}</div><div class="dash-label">Sinov darsi</div></div>
+          <div class="dash-card"><div class="dash-num">${d.sums.risky_count}</div><div class="dash-label">Xavfli o'quvchi</div></div>
+          <div class="dash-card" style="grid-column: span 2;"><div class="dash-num">${d.avg_attendance_percent !== null ? d.avg_attendance_percent + "%" : "-"}</div><div class="dash-label">O'rtacha davomat foizi</div></div>
+        </div>
+
+        <h2>☎️ Qo'ng'iroqlar va bog'lanish</h2>
+        <div class="dash-grid">
+          <div class="dash-card"><div class="dash-num">${d.sums.repeat_sales_calls}</div><div class="dash-label">Qayta sotuv qo'ng'iroqlari</div></div>
+          <div class="dash-card"><div class="dash-num">${d.sums.admin_contacted_clients}</div><div class="dash-label">Admin bog'langan mijozlar</div></div>
+          <div class="dash-card" style="grid-column: span 2;"><div class="dash-num">${d.sums.risky_contacted_count}</div><div class="dash-label">Xavflilar bilan bog'lanildi</div></div>
+        </div>
+
+        <h2>📅 Kunlar bo'yicha</h2>
+        ${dailyRows}
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  startInput.addEventListener("change", load);
+  endInput.addEventListener("change", load);
+  load();
+}
+
+async function renderReportsSummary(box, selectedMonth) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+
+  const monthOptions = lastNMonths(6);
+  const currentM = selectedMonth && monthOptions.includes(selectedMonth) ? selectedMonth : monthOptions[0];
+
+  const employees = await api("/api/employees");
+  const teachers = employees.filter((e) => e.role === "Teacher");
+
+  box.innerHTML = `
+    <div class="month-picker">
+      <label style="margin:0;">Oy:</label>
+      <select id="repMonth">
+        ${monthOptions.map((m) => `<option value="${m}" ${m === currentM ? "selected" : ""}>${m}</option>`).join("")}
+      </select>
+    </div>
+    <div id="repTotals"></div>
+
+    <h2>O'qituvchi bo'yicha tarix</h2>
+    <div class="card">
+      <label>O'qituvchi</label>
+      <select id="repTeacher">
+        ${teachers.map((t) => `<option value="${t.teacher_id}">${t.full_name} (${t.grade})</option>`).join("")}
+      </select>
+      <button class="primary" id="viewHistoryBtn">Tarixni ko'rish</button>
+    </div>
+  `;
+
+  async function renderTotalsBox(month) {
+    const totalsBox = box.querySelector("#repTotals");
+    totalsBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    const t = await api(`/api/reports/totals?month=${month}`);
+
+    const ulushHtml = t.total_revenue !== null
+      ? `
+        <h2>O'qituvchi ulushi</h2>
+        <div class="card">
+          <div class="row"><span class="label">Umumiy tushum</span><span class="value">${fmt(t.total_revenue)}</span></div>
+          <div class="row"><span class="label">O'rtacha ulush foizi</span><span class="value">${t.avg_teacher_share_percent}%</span></div>
+        </div>
+      `
+      : `<p style="font-size:12px;color:var(--hint);">💡 "Tushum" bo'limida tushum kiritilsa, bu yerda o'qituvchi ulushi ham chiqadi.</p>`;
+
+    totalsBox.innerHTML = `
+      <div class="dash-grid">
+        <div class="dash-card"><div class="dash-num">${t.total_stavka}</div><div class="dash-label">Jami stavka</div></div>
+        <div class="dash-card"><div class="dash-num">${fmt(t.total_fix)}</div><div class="dash-label">Jami fix</div></div>
+        <div class="dash-card"><div class="dash-num">${fmt(t.total_kpi)}</div><div class="dash-label">Jami KPI</div></div>
+        <div class="dash-card"><div class="dash-num">${fmt(t.total_bonus)}</div><div class="dash-label">Jami bonus</div></div>
+        <div class="dash-card" style="grid-column: span 2;"><div class="dash-num">${fmt(t.avg_stavka_amount)}</div><div class="dash-label">O'rtacha stavka summasi (Jami Fix ÷ Jami stavka)</div></div>
+      </div>
+      ${ulushHtml}
+    `;
+  }
+
+  box.querySelector("#repMonth").addEventListener("change", (e) => renderTotalsBox(e.target.value));
+  renderTotalsBox(currentM);
+
+  box.querySelector("#viewHistoryBtn").addEventListener("click", async () => {
+    const teacherId = box.querySelector("#repTeacher").value;
+    const teacher = teachers.find((t) => t.teacher_id === teacherId);
+    const monthAtDrilldown = box.querySelector("#repMonth").value;
+    await renderReportsHistory(box, teacher, monthAtDrilldown);
+  });
+}
+
+async function renderReportsHistory(box, teacher, returnMonth) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  const data = await api(`/api/reports/history?teacher_id=${teacher.teacher_id}&months=6`);
+
+  const rows = data.rows.map((r) => `
+    <tr>
+      <td>${r.month}</td>
+      <td>${r.fix !== null ? fmt(r.fix) : "-"}</td>
+      <td>${r.kpi_percent !== null ? r.kpi_percent + "%" : "-"}</td>
+      <td>${r.bonus !== null ? fmt(r.bonus) : "-"}</td>
+      <td>${r.total !== null ? fmt(r.total) : "-"}</td>
+    </tr>
+  `).join("");
+
+  box.innerHTML = `
+    <button class="back-btn" id="repBackBtn">← Orqaga</button>
+    <h2>${teacher.full_name} — oxirgi 6 oy</h2>
+    <div class="card" style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>Oy</th><th>Fix</th><th>KPI %</th><th>Bonus</th><th>Jami</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <button class="primary" id="csvBtn">📥 CSV yuklab olish</button>
+  `;
+
+  box.querySelector("#repBackBtn").addEventListener("click", () => renderReportsSummary(box, returnMonth));
+  box.querySelector("#csvBtn").addEventListener("click", () => {
+    const header = "Oy,Fix,KPI %,Bonus,Jami\n";
+    const csvRows = data.rows.map((r) => `${r.month},${r.fix ?? ""},${r.kpi_percent ?? ""},${r.bonus ?? ""},${r.total ?? ""}`).join("\n");
+    const blob = new Blob([header + csvRows], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${teacher.full_name}_hisobot.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+}
+
+// ---------- SETTINGS TAB ----------
+
+const CRITERION_GATE_FIELDS = [
+  { key: "retention", label: "🔁 Retention" },
+  { key: "progress", label: "📈 Student Progress" },
+  { key: "attendance", label: "🗓️ Attendance" },
+  { key: "homework", label: "📝 Homework" },
+  { key: "observation", label: "👀 Observation" },
+  { key: "feedback", label: "💬 Student Feedback" },
+  { key: "lms", label: "💻 Platforma intizomi" },
+];
+
+async function renderTaskCategoriesSettings(box) {
+  async function load() {
+    box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const cats = await api("/api/task-categories");
+      box.innerHTML = `
+        <div class="task-category-manage-list">
+          ${cats.map((c) => `
+            <div class="task-category-manage-row">
+              <span>${c.icon || ""} ${c.label}</span>
+              <button class="mini-btn" data-delete-cat="${c.key}">🗑️</button>
+            </div>
+          `).join("")}
+        </div>
+        <label>Yangi kategoriya nomi</label>
+        <input id="newCatLabel" type="text" placeholder="masalan: Marketing" />
+        <label>Ikonka (ixtiyoriy, bitta emoji)</label>
+        <input id="newCatIcon" type="text" placeholder="📣" maxlength="4" />
+        <button class="primary" id="addCatBtn" style="margin-top:8px;">+ Qo'shish</button>
+        <div id="catMsg" style="margin-top:8px;font-size:13px;"></div>
+      `;
+
+      box.querySelectorAll("[data-delete-cat]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          showConfirm("Kategoriyani o'chirish", "Bu kategoriya butunlay o'chirilsinmi?", async () => {
+            try {
+              await api("/api/settings/task-categories/delete", {
+                method: "POST", body: JSON.stringify({ key: btn.dataset.deleteCat }),
+              });
+              load();
+            } catch (err) {
+              safeAlert("Xato: " + err.message);
+            }
+          });
+        });
+      });
+
+      box.querySelector("#addCatBtn").addEventListener("click", async () => {
+        const msg = box.querySelector("#catMsg");
+        const label = box.querySelector("#newCatLabel").value.trim();
+        const icon = box.querySelector("#newCatIcon").value.trim();
+        if (!label) { msg.innerHTML = `<span class="badge warn">❌ Nom kiriting</span>`; return; }
+        const key = label.toLowerCase().replace(/[^a-z0-9а-яёʻʼ]+/gi, "_").slice(0, 30) + "_" + Date.now().toString(36).slice(-4);
+        try {
+          await api("/api/settings/task-categories/add", {
+            method: "POST", body: JSON.stringify({ key, label, icon }),
+          });
+          load();
+        } catch (err) {
+          msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+        }
+      });
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+  await load();
+}
+
+async function renderTaskProblemStatusesSettings(box) {
+  async function load() {
+    box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const statuses = await api("/api/task-problem-statuses");
+      box.innerHTML = `
+        <div class="task-category-manage-list">
+          ${statuses.map((s) => `
+            <div class="task-category-manage-row">
+              <span>${s.label}</span>
+              <button class="mini-btn" data-delete-status="${s.id}">🗑️</button>
+            </div>
+          `).join("")}
+        </div>
+        <label>Yangi status</label>
+        <input id="newStatusLabel" type="text" placeholder="masalan: Nizolashdi" />
+        <button class="primary" id="addStatusBtn" style="margin-top:8px;">+ Qo'shish</button>
+        <div id="statusMsg" style="margin-top:8px;font-size:13px;"></div>
+      `;
+
+      box.querySelectorAll("[data-delete-status]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          showConfirm("Statusni o'chirish", "Bu status butunlay o'chirilsinmi?", async () => {
+            try {
+              await api("/api/settings/task-problem-statuses/delete", {
+                method: "POST", body: JSON.stringify({ id: parseInt(btn.dataset.deleteStatus, 10) }),
+              });
+              load();
+            } catch (err) {
+              safeAlert("Xato: " + err.message);
+            }
+          });
+        });
+      });
+
+      box.querySelector("#addStatusBtn").addEventListener("click", async () => {
+        const msg = box.querySelector("#statusMsg");
+        const label = box.querySelector("#newStatusLabel").value.trim();
+        if (!label) { msg.innerHTML = `<span class="badge warn">❌ Nom kiriting</span>`; return; }
+        try {
+          await api("/api/settings/task-problem-statuses/add", {
+            method: "POST", body: JSON.stringify({ label }),
+          });
+          load();
+        } catch (err) {
+          msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+        }
+      });
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+  await load();
+}
+
+async function renderTaskPenaltiesSettings(box) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  try {
+    const penalties = await api("/api/settings/task-penalties");
+    box.innerHTML = `
+      <p style="font-size:12px;color:var(--hint);margin:0 0 10px;">
+        Har bir rol uchun, muddati o'tgan HAR BIR topshiriq uchun qo'llaniladigan jarima summasi. 0 qoldirilsa, o'sha rol uchun jarima o'chirilgan hisoblanadi.
+      </p>
+      ${Object.keys(ROLE_LABELS_UZ_JS).map((role) => `
+        <label>${ROLE_LABELS_UZ_JS[role]}</label>
+        <input id="penalty_${role}" type="number" step="1000" min="0" value="${penalties[role] || 0}" />
+      `).join("")}
+      <button class="primary" id="savePenaltiesBtn" style="margin-top:8px;">Saqlash</button>
+      <div id="penaltiesMsg" style="margin-top:8px;font-size:13px;"></div>
+    `;
+
+    box.querySelector("#savePenaltiesBtn").addEventListener("click", async () => {
+      const msg = box.querySelector("#penaltiesMsg");
+      msg.textContent = "Saqlanmoqda...";
+      try {
+        for (const role of Object.keys(ROLE_LABELS_UZ_JS)) {
+          const val = parseFloat(box.querySelector(`#penalty_${role}`).value) || 0;
+          if (val !== (penalties[role] || 0)) {
+            await api("/api/settings/task-penalties", {
+              method: "POST", body: JSON.stringify({ role, amount: val }),
+            });
+          }
+        }
+        msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+      } catch (err) {
+        msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      }
+    });
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">${err.message}</div>`;
+  }
+}
+
+async function renderSettingsTab(box) {
+  const s = await api("/api/settings");
+
+  const gradeRows = Object.entries(s.grade_rates).map(([grade, rate]) => `
+    <div class="row">
+      <span class="label">${grade}</span>
+      <input type="number" step="10000" value="${rate}" data-grade="${grade}" style="width:140px;margin:0;" />
+    </div>
+  `).join("");
+
+  box.innerHTML = `
+    <h2>Grade stavkalari (1.0 stavka uchun, so'm)</h2>
+    <div class="card">${gradeRows}</div>
+
+    <h2>KPI fondi foizi</h2>
+    <div class="card">
+      <input id="kpiPercent" type="number" step="1" value="${s.kpi_pool_percent}" />
+    </div>
+
+    <h2>Avans foizi (Fix'dan)</h2>
+    <div class="card">
+      <input id="avansPercent" type="number" step="1" value="${s.avans_percent}" />
+      <p style="font-size:12px;color:var(--hint);margin:4px 0 0;">Masalan 30 kiritsangiz: Avans = Fix × 30%</p>
+    </div>
+
+    <h2>Minimal KPI foizi</h2>
+    <div class="card">
+      <input id="minKpiPercent" type="number" step="1" value="${s.min_kpi_percent}" />
+      <p style="font-size:12px;color:var(--hint);margin:4px 0 0;">Agar o'qituvchining yakuniy KPI foizi shu chegaradan past bo'lsa, KPI summasi butunlay 0 bo'ladi (masalan: chegara 55%, xodim 48% to'plasa — KPI summasi 0). Chegaraga yetsa yoki undan yuqori bo'lsa, KPI to'liq, haqiqiy foiz bo'yicha to'lanadi.</p>
+    </div>
+
+    <h2>📚 Stavka / Guruh nisbati</h2>
+    <div class="card">
+      <label>1 stavka = necha guruh?</label>
+      <input id="groupsPerStavka" type="number" step="1" min="1" value="${s.groups_per_stavka}" />
+      <p style="font-size:12px;color:var(--hint);margin:4px 0 0;">Xodim tahrirlashda "Guruh qo'shish/ayirish" tugmalari shu nisbat asosida stavkani avtomatik hisoblaydi.</p>
+    </div>
+
+    <button class="primary" id="saveSettingsBtn">Saqlash</button>
+    <div id="settingsMsg" style="margin-top:8px;font-size:13px;"></div>
+
+    <h2>🚧 Mezonlar bo'yicha Gate chegaralari</h2>
+    <div class="card">
+      <p style="font-size:12px;color:var(--hint);margin:0 0 10px;">
+        Har bir mezon uchun alohida minimal xom foiz chegarasi. <b>Bu faqat Hisobotlar bo'limida</b>
+        kimlar chegaradan pastligini ko'rsatish uchun ishlatiladi — ish haqi/KPI summasi hisob-kitobiga
+        hech qanday ta'sir qilmaydi. 0 qoldirilsa, o'sha mezon uchun Gate o'chirilgan hisoblanadi.
+      </p>
+      ${CRITERION_GATE_FIELDS.map((f) => `
+        <label>${f.label} gate (%)</label>
+        <input id="gate_${f.key}" type="number" step="1" min="0" max="100" value="${s.criterion_gates[f.key] ?? 0}" />
+      `).join("")}
+      <button class="primary" id="saveGatesBtn" style="margin-top:6px;">Gate'larni saqlash</button>
+      <div id="gatesMsg" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+
+    <h2>📋 Topshiriqlar — Kategoriyalar</h2>
+    <div class="card" id="taskCategoriesCard"><div class="center-box"><div class="spinner"></div></div></div>
+
+    <h2>🎓 Topshiriqlar — O'quvchi muammo statuslari</h2>
+    <div class="card" id="taskStatusesCard"><div class="center-box"><div class="spinner"></div></div></div>
+
+    <h2>⏰ Muddati o'tgan topshiriq uchun jarima</h2>
+    <div class="card" id="taskPenaltiesCard"><div class="center-box"><div class="spinner"></div></div></div>
+
+    <h2>🧪 Sinov rejimi</h2>
+    <div class="card">
+      <p style="font-size:12px;color:var(--hint);margin:0 0 10px;">
+        Bitta Telegram akkaunt bilan boshqa rollarni sinab ko'rish uchun — pastdan xodimni tanlang va
+        "Shu sifatda kirish" tugmasini bosing. Istalgan vaqtda ekran tepasidagi banner orqali
+        asl (CEO) hisobingizga xavfsiz qaytishingiz mumkin.
+      </p>
+      <label>Xodim</label>
+      <select id="testModeEmployee"></select>
+      <button class="secondary" id="testModeEnterBtn">🧪 Shu sifatda kirish</button>
+      <div id="testModeMsg" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+  `;
+
+  await renderTaskCategoriesSettings(box.querySelector("#taskCategoriesCard"));
+  await renderTaskProblemStatusesSettings(box.querySelector("#taskStatusesCard"));
+  await renderTaskPenaltiesSettings(box.querySelector("#taskPenaltiesCard"));
+
+  box.querySelector("#saveGatesBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#gatesMsg");
+    msg.textContent = "Saqlanmoqda...";
+    try {
+      for (const f of CRITERION_GATE_FIELDS) {
+        const val = parseFloat(box.querySelector(`#gate_${f.key}`).value) || 0;
+        if (val !== (s.criterion_gates[f.key] ?? 0)) {
+          await api("/api/settings/criterion-gate", {
+            method: "POST",
+            body: JSON.stringify({ criterion: f.key, value: val }),
+          });
+        }
+      }
+      msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+
+  try {
+    const employees = await api("/api/employees");
+    const empSelect = box.querySelector("#testModeEmployee");
+    empSelect.innerHTML = employees.map((e) => `
+      <option value="${e.teacher_id}">${e.full_name} (${e.role}${e.grade ? " · " + e.grade : ""})</option>
+    `).join("");
+
+    box.querySelector("#testModeEnterBtn").addEventListener("click", () => {
+      const selected = empSelect.selectedOptions[0];
+      showConfirm(
+        "Sinov rejimiga o'tish",
+        `Endi <b>${selected.textContent}</b> sifatida ko'rasiz. Asl hisobingizga qaytish uchun istalgan vaqtda ekran tepasidagi bannerni bosishingiz mumkin. Davom etasizmi?`,
+        async () => {
+          const msg = box.querySelector("#testModeMsg");
+          msg.textContent = "O'tilmoqda...";
+          try {
+            await api("/api/admin/switch-my-link", {
+              method: "POST",
+              body: JSON.stringify({ target_teacher_id: empSelect.value }),
+            });
+            window.location.reload();
+          } catch (err) {
+            msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+          }
+        }
+      );
+    });
+  } catch (err) {
+    // xodimlar ro'yxatini yuklab bo'lmasa, sinov rejimi qismini jim tashlab ketamiz
+  }
+
+  box.querySelector("#saveSettingsBtn").addEventListener("click", async () => {
+    const changes = [];
+    const gradeInputs = box.querySelectorAll("input[data-grade]");
+    gradeInputs.forEach((input) => {
+      const oldVal = s.grade_rates[input.dataset.grade];
+      const newVal = parseFloat(input.value);
+      if (newVal !== oldVal) changes.push({ type: "grade", grade: input.dataset.grade, oldVal, newVal });
+    });
+    const newKpi = parseFloat(box.querySelector("#kpiPercent").value);
+    if (newKpi !== s.kpi_pool_percent) changes.push({ type: "kpi", oldVal: s.kpi_pool_percent, newVal: newKpi });
+
+    const newAvans = parseFloat(box.querySelector("#avansPercent").value);
+    if (newAvans !== s.avans_percent) changes.push({ type: "avans", oldVal: s.avans_percent, newVal: newAvans });
+
+    const newMinKpi = parseFloat(box.querySelector("#minKpiPercent").value);
+    if (newMinKpi !== s.min_kpi_percent) changes.push({ type: "minkpi", oldVal: s.min_kpi_percent, newVal: newMinKpi });
+
+    const newGroupsPerStavka = parseFloat(box.querySelector("#groupsPerStavka").value);
+    if (newGroupsPerStavka !== s.groups_per_stavka) changes.push({ type: "groupsPerStavka", oldVal: s.groups_per_stavka, newVal: newGroupsPerStavka });
+
+    const msg = box.querySelector("#settingsMsg");
+    if (changes.length === 0) {
+      msg.textContent = "O'zgarish yo'q.";
+      return;
+    }
+
+    const impactLines = [];
+    for (const c of changes) {
+      if (c.type === "grade") {
+        const impact = await api(`/api/settings/grade-rate-impact?grade=${c.grade}`);
+        impactLines.push(`<b>${c.grade}:</b> ${fmt(c.oldVal)} → ${fmt(c.newVal)} (${impact.count} ta faol xodimga ta'sir qiladi)`);
+      } else if (c.type === "kpi") {
+        impactLines.push(`<b>KPI fondi foizi:</b> ${c.oldVal}% → ${c.newVal}% (barcha o'qituvchilarning KPI hisobiga ta'sir qiladi)`);
+      } else if (c.type === "avans") {
+        const impact = await api("/api/settings/avans-impact");
+        impactLines.push(`<b>Avans foizi:</b> ${c.oldVal}% → ${c.newVal}% (${impact.count} ta faol xodimga ta'sir qiladi)`);
+      } else if (c.type === "minkpi") {
+        impactLines.push(`<b>Minimal KPI foizi:</b> ${c.oldVal}% → ${c.newVal}% (KPI foizi shu chegaradan past bo'lgan har qanday o'qituvchining KPI summasi 0 bo'lib qoladi)`);
+      } else if (c.type === "groupsPerStavka") {
+        impactLines.push(`<b>Stavka/Guruh nisbati:</b> 1 stavka = ${c.oldVal} guruh → 1 stavka = ${c.newVal} guruh (bundan buyongi "Guruh qo'shish/ayirish" hisob-kitobiga ta'sir qiladi)`);
+      }
+    }
+
+    showConfirm("O'zgarishlarni tasdiqlang", impactLines.join("<br/><br/>"), async () => {
+      msg.textContent = "Saqlanmoqda...";
+      try {
+        for (const c of changes) {
+          if (c.type === "grade") {
+            await api("/api/settings/grade-rate", {
+              method: "POST",
+              body: JSON.stringify({ grade: c.grade, rate: c.newVal }),
+            });
+          } else if (c.type === "kpi") {
+            await api("/api/settings/kpi-pool-percent", {
+              method: "POST",
+              body: JSON.stringify({ value: c.newVal }),
+            });
+          } else if (c.type === "avans") {
+            await api("/api/settings/avans-percent", {
+              method: "POST",
+              body: JSON.stringify({ value: c.newVal }),
+            });
+          } else if (c.type === "minkpi") {
+            await api("/api/settings/min-kpi-percent", {
+              method: "POST",
+              body: JSON.stringify({ value: c.newVal }),
+            });
+          } else if (c.type === "groupsPerStavka") {
+            await api("/api/settings/groups-per-stavka", {
+              method: "POST",
+              body: JSON.stringify({ value: c.newVal }),
+            });
+          }
+        }
+        msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+      } catch (err) {
+        msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      }
+    });
+  });
+}
+
+boot();

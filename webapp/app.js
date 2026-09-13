@@ -207,7 +207,7 @@ function showPasswordModal(password, name) {
         <h3>${name ? name + " uchun parol" : "Yangi parol"}</h3>
         <div class="modal-message">
           <p style="font-size:13px;color:var(--hint);margin-top:0;">
-            Bu parolni xodimga yetkazing. Login sifatida uning Teacher ID'sidan foydalanadi.
+            Bu parolni xodimga yetkazing. Login sifatida uning shaxsiy ID'sidan foydalanadi.
             Parol shu yerda faqat <b>bir marta</b> ko'rsatiladi — keyinroq qayta ko'rish imkoni yo'q.
           </p>
           <input readonly value="${password}" id="pwInput" onclick="this.select()" />
@@ -4228,10 +4228,10 @@ async function renderEmployeesList(box, me) {
         <option value="CEO">CEO</option>
       </select>
 
-      <div id="e_teacherFields" style="display:none;">
-        <label>Teacher ID (unikal, masalan T011)</label>
-        <input id="e_id" type="text" />
+      <label>Login (unikal, masalan T011 yoki DIR1) — xodim tizimga shu bilan kiradi</label>
+      <input id="e_id" type="text" />
 
+      <div id="e_teacherFields" style="display:none;">
         <label>Grade</label>
         <select id="e_grade">
           <option value="">-</option>
@@ -4266,13 +4266,16 @@ async function renderEmployeesList(box, me) {
       <label>Tel raqam</label>
       <input id="e_phone" type="tel" value="+998 " />
 
+      <label>Parol (ixtiyoriy)</label>
+      <input id="e_password" type="text" placeholder="Bo'sh qoldirsangiz, avtomatik yaratiladi" />
+
       <button class="primary" id="addEmpBtn">Qo'shish</button>
       <div id="addEmpMsg" style="margin-top:8px;font-size:13px;"></div>
     </div>
 
     <p style="font-size:12px;color:var(--hint);padding:0 4px;">
-      💡 Xodim qo'shilgach, chiqqan vaqtinchalik parolni nusxalab, o'sha xodimga yuboring.
-      Xodim login sifatida Teacher ID'sini, parol sifatida shu ko'rsatilgan parolni kiritadi.
+      💡 Xodim tizimga yuqoridagi <b>Login</b> va shu yerda kiritgan (yoki avtomatik yaratilgan) <b>parol</b> bilan kiradi.
+      Qo'shilgach, parol yana ko'rsatiladi — uni nusxalab xodimga yuboring.
     </p>
   `;
 
@@ -4310,22 +4313,20 @@ async function renderEmployeesList(box, me) {
       return;
     }
 
-    let teacherId;
+    const teacherId = box.querySelector("#e_id").value.trim();
+    if (!teacherId) {
+      msg.innerHTML = `<span class="badge warn">❌ Login (ID) to'ldirilishi shart</span>`;
+      return;
+    }
+
     let grade = null;
     let fixedSalary = null;
     let subject = null;
     let revenuePercent = null;
 
     if (role === "Teacher") {
-      teacherId = box.querySelector("#e_id").value.trim();
       grade = box.querySelector("#e_grade").value || null;
-      if (!teacherId) {
-        msg.innerHTML = `<span class="badge warn">❌ Teacher ID to'ldirilishi shart</span>`;
-        return;
-      }
     } else if (role === "SubjectTeacher") {
-      const roleCode = "SUB";
-      teacherId = `${roleCode}-${Date.now()}`;
       subject = box.querySelector("#e_subject").value.trim() || null;
       revenuePercent = parseFloat(box.querySelector("#e_revenuePercent").value);
       if (!subject) {
@@ -4337,8 +4338,6 @@ async function renderEmployeesList(box, me) {
         return;
       }
     } else {
-      const roleCode = { Director: "DIR", EduManager: "EDU", CEO: "CEO", Administrator: "ADM", SalesManager: "SLS" }[role] || "EMP";
-      teacherId = `${roleCode}-${Date.now()}`;
       fixedSalary = _parseFormattedNumber(salaryInput.value);
     }
 
@@ -4359,6 +4358,7 @@ async function renderEmployeesList(box, me) {
           fixed_salary: fixedSalary,
           subject: subject,
           revenue_percent: revenuePercent,
+          password: box.querySelector("#e_password").value.trim() || null,
         }),
       });
       msg.innerHTML = `<span class="badge ok">✅ Qo'shildi</span>`;
@@ -4539,7 +4539,7 @@ function renderEmployeeEditForm(box, me, emp) {
     <h2>Parol</h2>
     <div class="card">
       <p style="font-size:13px;color:var(--hint);margin-top:0;">
-        Xodim tizimga o'zining Teacher ID'si (<b>${emp.teacher_id}</b>) va parol bilan kiradi.
+        Xodim tizimga o'zining login'i (<b>${emp.teacher_id}</b>) va parol bilan kiradi.
         Agar parolni unutgan bo'lsa yoki almashtirish kerak bo'lsa, shu yerdan yangi parol o'rnating.
       </p>
       <button class="secondary" id="ed_resetPw">🔑 Parolni tiklash</button>

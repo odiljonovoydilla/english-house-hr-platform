@@ -8,6 +8,8 @@ Railway'da fayl saqlanishi uchun Volume ulash kerak (quyida DB_PATH orqali).
 import os
 import secrets
 import sqlite3
+import hashlib
+import hmac
 from datetime import datetime
 
 from payroll_engine import (
@@ -25,6 +27,23 @@ _conn.row_factory = sqlite3.Row
 
 def now_iso():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 200_000)
+    return f"{salt}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    if not stored:
+        return False
+    try:
+        salt, hex_digest = stored.split("$", 1)
+    except ValueError:
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 200_000)
+    return hmac.compare_digest(digest.hex(), hex_digest)
 
 
 def _add_column_if_missing(table: str, column: str, coltype: str):
@@ -64,6 +83,7 @@ def init_db():
     _add_column_if_missing("employees", "link_token", "TEXT")
     _add_column_if_missing("employees", "phone", "TEXT")
     _add_column_if_missing("employees", "fixed_salary", "REAL")
+    _add_column_if_missing("employees", "password_hash", "TEXT")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS scorecards (
@@ -396,36 +416,15 @@ def init_db():
     _add_column_if_missing("edu_manager_daily_logs", "attendance_percent", "REAL")
     _add_column_if_missing("edu_manager_daily_logs", "risky_count", "INTEGER")
 
-    # Sinov rejimi (Test Mode) — CEO turli rollarni bitta Telegram akkaunt bilan
-    # sinash uchun vaqtincha "kim sifatida ko'rinish" ni kuzatib boradi.
+    # Sinov rejimi (Test Mode) — CEO/admin o'z sessiyasi bilan boshqa xodim sifatida
+    # ko'rish uchun vaqtincha "kim sifatida ko'rinish" ni kuzatib boradi.
     cur.execute("""
     CREATE TABLE IF NOT EXISTS test_mode_sessions (
-        telegram_id INTEGER PRIMARY KEY,
+        real_teacher_id TEXT PRIMARY KEY,
         impersonating_teacher_id TEXT,
         created_at TEXT
     )
     """)
-
-    # MUHIM MIGRATSIYA: test_mode_sessions jadvali ilgari boshqacha sxemada
-    # (original_teacher_id TEXT NOT NULL bilan) yaratilgan bo'lishi mumkin — bu holda
-    # yuqoridagi "CREATE TABLE IF NOT EXISTS" hech narsa qilmaydi (jadval allaqachon bor)
-    # va eski NOT NULL cheklovi hali ham kuchda qoladi, bu esa yangi kodning INSERT'ini
-    # "NOT NULL constraint failed" xatosi bilan buzadi (500 xato). Shuni tekshirib,
-    # xavfsiz tarzda tuzatamiz — bu jadval faqat vaqtinchalik sessiya ma'lumoti
-    # saqlagani uchun, uni tozalab qayta yaratish hech kimga zarar keltirmaydi.
-    _tms_cols = [c[1] for c in cur.execute("PRAGMA table_info(test_mode_sessions)").fetchall()]
-    if "original_teacher_id" in _tms_cols:
-        cur.execute("DROP TABLE test_mode_sessions")
-        cur.execute("""
-        CREATE TABLE test_mode_sessions (
-            telegram_id INTEGER PRIMARY KEY,
-            impersonating_teacher_id TEXT,
-            created_at TEXT
-        )
-        """)
-
-    # Eski bazalarda yangi ustun yo'q bo'lishi mumkin (xavfsiz migratsiya)
-    _add_column_if_missing("test_mode_sessions", "impersonating_teacher_id", "TEXT")
 
     # Topshiriqlar — xodimlar orasidagi buyruq/xabar tizimi (istalgan xodimdan
     # istalgan xodimga yoki butun rolga, 3 bosqichli holat bilan)
@@ -533,18 +532,20 @@ def init_db():
 
     _conn.commit()
 
-    # Bootstrap: birinchi CEO'ni environment orqali qo'shish (agar hali yo'q bo'lsa)
-    admin_tg_id = os.getenv("ADMIN_TELEGRAM_ID")
+    # Bootstrap: birinchi CEO'ni environment orqali qo'shish (agar hali yo'q bo'lsa).
+    # Login/parol asosidagi platforma uchun: ADMIN_TEACHER_ID + ADMIN_PASSWORD orqali.
+    admin_teacher_id = os.getenv("ADMIN_TEACHER_ID")
+    admin_password = os.getenv("ADMIN_PASSWORD")
     admin_name = os.getenv("ADMIN_FULL_NAME", "Direktor")
-    if admin_tg_id:
+    if admin_teacher_id and admin_password:
         existing = cur.execute(
-            "SELECT id FROM employees WHERE telegram_id=?", (int(admin_tg_id),)
+            "SELECT id FROM employees WHERE teacher_id=?", (admin_teacher_id,)
         ).fetchone()
         if not existing:
             cur.execute("""
-                INSERT INTO employees (teacher_id, full_name, role, telegram_id, active, created_at)
+                INSERT INTO employees (teacher_id, full_name, role, password_hash, active, created_at)
                 VALUES (?, ?, 'CEO', ?, 1, ?)
-            """, (f"ADMIN-{admin_tg_id}", admin_name, int(admin_tg_id), now_iso()))
+            """, (admin_teacher_id, admin_name, hash_password(admin_password), now_iso()))
             _conn.commit()
 
 
@@ -610,14 +611,14 @@ def list_employees(role: str = None):
 
 
 def add_employee(teacher_id, full_name, role, grade, workload_rate, phone=None, fixed_salary=None,
-                  subject=None, revenue_percent=None):
+                  subject=None, revenue_percent=None, password_hash=None):
     now = now_iso()
     _conn.execute("""
         INSERT INTO employees (teacher_id, full_name, role, grade, workload_rate, phone, fixed_salary,
-                                subject, revenue_percent, active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                                subject, revenue_percent, password_hash, active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
     """, (teacher_id, full_name, role, grade, workload_rate, phone, fixed_salary,
-          subject, revenue_percent, now))
+          subject, revenue_percent, password_hash, now))
     _conn.commit()
 
     # Grade/Stavka tarixini shu kundan boshlab yozib qo'yamiz (Teacher uchun muhim)
@@ -661,6 +662,11 @@ def update_employee(teacher_id, full_name=None, grade=None, workload_rate=None, 
             final_grade = grade if grade is not None else current["grade"]
             final_workload = workload_rate if workload_rate is not None else current["workload_rate"]
             add_grade_history(teacher_id, eff_date, final_grade, final_workload, created_by=updated_by)
+
+
+def set_password(teacher_id, password_hash):
+    _conn.execute("UPDATE employees SET password_hash=? WHERE teacher_id=?", (password_hash, teacher_id))
+    _conn.commit()
 
 
 def add_grade_history(teacher_id: str, effective_date: str, grade: str, workload_rate: float,
@@ -1321,43 +1327,30 @@ def list_approved_sales_manager_daily_before(teacher_id: str, month: str, date: 
 
 # ---------- SINOV REJIMI (Test Mode) — bitta Telegram akkaunt bilan turli rollarni sinash ----------
 
-def get_impersonation(telegram_id: int):
+def get_impersonation(real_teacher_id: str):
     """
-    Agar bu Telegram akkaunt hozir sinov rejimida (kimdir sifatida) ko'rilayotgan bo'lsa,
+    Agar bu sessiya hozir sinov rejimida (kimdir sifatida) ko'rilayotgan bo'lsa,
     o'sha nishon xodimning teacher_id'sini qaytaradi. Aks holda None.
-    MUHIM: bu funksiya hech qachon employees.telegram_id ustunini o'zgartirmaydi —
-    shuning uchun haqiqiy xodimlarning bog'lanishi hech qachon buzilmaydi.
     """
     row = _conn.execute(
-        "SELECT impersonating_teacher_id FROM test_mode_sessions WHERE telegram_id=?", (telegram_id,)
+        "SELECT impersonating_teacher_id FROM test_mode_sessions WHERE real_teacher_id=?", (real_teacher_id,)
     ).fetchone()
     return row["impersonating_teacher_id"] if row else None
 
 
-def set_impersonation(telegram_id: int, target_teacher_id: str):
-    """CEO'ning haqiqiy Telegram ID'si qaysi xodim sifatida ko'rilayotganini belgilaydi/yangilaydi."""
+def set_impersonation(real_teacher_id: str, target_teacher_id: str):
+    """Haqiqiy (CEO) sessiya qaysi xodim sifatida ko'rilayotganini belgilaydi/yangilaydi."""
     _conn.execute("""
-        INSERT INTO test_mode_sessions (telegram_id, impersonating_teacher_id, created_at)
+        INSERT INTO test_mode_sessions (real_teacher_id, impersonating_teacher_id, created_at)
         VALUES (?, ?, ?)
-        ON CONFLICT(telegram_id) DO UPDATE SET impersonating_teacher_id=excluded.impersonating_teacher_id
-    """, (telegram_id, target_teacher_id, now_iso()))
+        ON CONFLICT(real_teacher_id) DO UPDATE SET impersonating_teacher_id=excluded.impersonating_teacher_id
+    """, (real_teacher_id, target_teacher_id, now_iso()))
     _conn.commit()
 
 
-def clear_impersonation(telegram_id: int):
-    """Sinov rejimidan chiqadi — CEO'ning haqiqiy hisobiga (hech narsa o'zgarmagan holda) qaytadi."""
-    _conn.execute("DELETE FROM test_mode_sessions WHERE telegram_id=?", (telegram_id,))
-    _conn.commit()
-
-
-def get_test_mode_session(telegram_id: int):
-    return _conn.execute(
-        "SELECT * FROM test_mode_sessions WHERE telegram_id=?", (telegram_id,)
-    ).fetchone()
-
-
-def end_test_mode_session(telegram_id: int):
-    _conn.execute("DELETE FROM test_mode_sessions WHERE telegram_id=?", (telegram_id,))
+def clear_impersonation(real_teacher_id: str):
+    """Sinov rejimidan chiqadi — haqiqiy hisobga (hech narsa o'zgarmagan holda) qaytadi."""
+    _conn.execute("DELETE FROM test_mode_sessions WHERE real_teacher_id=?", (real_teacher_id,))
     _conn.commit()
 
 

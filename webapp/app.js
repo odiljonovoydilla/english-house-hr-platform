@@ -1,7 +1,7 @@
 // ============================================================
 // English House HR Platform — frontend (brauzer ilovasi)
-// Auth Telegram Login Widget orqali olingan sessiya cookie'siga
-// asoslanadi (server.py: /login, /api/telegram-login-callback).
+// Auth login (teacher_id) + parol orqali olingan sessiya cookie'siga
+// asoslanadi (server.py: /login, /api/login).
 // ============================================================
 
 const appEl = document.getElementById("app");
@@ -73,7 +73,7 @@ function el(html) {
 }
 
 // ============================================================
-// UMUMIY YORDAMCHI UI: tasdiqlash oynasi, havola oynasi, nusxalash
+// UMUMIY YORDAMCHI UI: tasdiqlash oynasi, parol oynasi, nusxalash
 // ============================================================
 
 function showAmountChoiceModal(title, message, autoAmount, onConfirm) {
@@ -123,8 +123,7 @@ function showAmountChoiceModal(title, message, autoAmount, onConfirm) {
 }
 
 function showToast(message, type = "info") {
-  // Brauzerning odatiy safeAlert() Telegram WebView'da ba'zan ilovani "muzlatib qo'yadi" —
-  // shuning uchun bu doim xavfsiz, hech qachon bloklamaydigan mini-bildirishnoma.
+  // Brauzerning odatiy alert() o'rniga — bloklamaydigan mini-bildirishnoma.
   const toast = el(`<div class="app-toast app-toast-${type}">${message}</div>`);
   document.body.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add("app-toast-visible"));
@@ -139,7 +138,7 @@ function safeAlert(message, type = "info") {
 }
 
 function showTextPromptModal(title, placeholder, onSubmit) {
-  // Brauzerning odatiy prompt() o'rniga — xuddi shu sababdan (Telegram WebView xavfsizligi).
+  // Brauzerning odatiy prompt() o'rniga — yaxshiroq uslub va nazorat uchun.
   const overlay = el(`
     <div class="modal-overlay">
       <div class="modal-box">
@@ -201,21 +200,17 @@ function fallbackCopy(text) {
   ta.remove();
 }
 
-function showLinkModal(link, name) {
-  if (!link) {
-    safeAlert("Havola generatsiya qilinmadi. Bot username hali aniqlanmagan bo'lishi mumkin — bir ozdan so'ng qayta urinib ko'ring.");
-    return;
-  }
+function showPasswordModal(password, name) {
   const overlay = el(`
     <div class="modal-overlay">
       <div class="modal-box">
-        <h3>${name ? name + " uchun havola" : "Shaxsiy havola"}</h3>
+        <h3>${name ? name + " uchun parol" : "Yangi parol"}</h3>
         <div class="modal-message">
           <p style="font-size:13px;color:var(--hint);margin-top:0;">
-            Bu havolani xodimga yuboring. U havolani ochib botni ishga tushirgach, tizim uni avtomatik taniydi.
-            Havola <b>bir martalik</b> — ishlatilgach yaroqsiz bo'ladi.
+            Bu parolni xodimga yetkazing. Login sifatida uning Teacher ID'sidan foydalanadi.
+            Parol shu yerda faqat <b>bir marta</b> ko'rsatiladi — keyinroq qayta ko'rish imkoni yo'q.
           </p>
-          <input readonly value="${link}" id="linkInput" onclick="this.select()" />
+          <input readonly value="${password}" id="pwInput" onclick="this.select()" />
         </div>
         <div class="modal-actions">
           <button class="secondary" id="modalClose">Yopish</button>
@@ -227,7 +222,7 @@ function showLinkModal(link, name) {
   document.body.appendChild(overlay);
   overlay.querySelector("#modalClose").addEventListener("click", () => overlay.remove());
   overlay.querySelector("#modalCopy").addEventListener("click", () => {
-    copyText(link);
+    copyText(password);
     overlay.querySelector("#modalCopy").textContent = "✅ Nusxalandi";
   });
 }
@@ -2404,10 +2399,6 @@ async function renderDashboardTab(box) {
       const missingHtml = d.missing_scorecard.length
         ? `<div class="gate-warning">⚠️ Scorecard kiritilmagan: ${d.missing_scorecard.map((m) => m.full_name).join(", ")}</div>`
         : "";
-      const unlinkedHtml = d.unlinked_employees > 0
-        ? `<div class="gate-warning">⚠️ ${d.unlinked_employees} ta xodim hali tizimga bog'lanmagan</div>`
-        : "";
-
       const medals = ["🥇", "🥈", "🥉"];
       const top3Html = d.top3.length
         ? `<div class="rank-list">${d.top3.map((t, i) => `
@@ -2495,7 +2486,6 @@ async function renderDashboardTab(box) {
           ${diffHtml}
         </div>
         ${missingHtml}
-        ${unlinkedHtml}
         <div class="dash-grid">
           <div class="dash-card"><div class="dash-card-icon">👥</div><div class="dash-num">${d.active_employees}</div><div class="dash-label">Faol xodim</div></div>
           <div class="dash-card"><div class="dash-card-icon">💳</div><div class="dash-num">${fmt(d.total_advance)}</div><div class="dash-label">Berilgan avans</div></div>
@@ -4201,10 +4191,8 @@ async function renderEmployeesList(box, me) {
       <td>${e.role}</td>
       <td>${e.grade || "-"}</td>
       <td>${e.workload_rate}</td>
-      <td>${e.telegram_id ? '<span class="badge ok">Bog\'langan</span>' : '<span class="badge warn">Bog\'lanmagan</span>'}</td>
       <td style="white-space:nowrap;">
         <button class="mini-btn" data-edit="${e.teacher_id}">✏️</button>
-        <button class="mini-btn" data-link="${e.teacher_id}">🔗</button>
         <button class="mini-btn" data-deactivate="${e.teacher_id}">🗑️</button>
       </td>
     </tr>
@@ -4213,7 +4201,7 @@ async function renderEmployeesList(box, me) {
   box.innerHTML = `
     <div class="card" style="overflow-x:auto;">
       <table>
-        <thead><tr><th>Ism</th><th>Rol</th><th>Grade</th><th>Stavka</th><th>Holat</th><th></th></tr></thead>
+        <thead><tr><th>Ism</th><th>Rol</th><th>Grade</th><th>Stavka</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -4283,8 +4271,8 @@ async function renderEmployeesList(box, me) {
     </div>
 
     <p style="font-size:12px;color:var(--hint);padding:0 4px;">
-      💡 Xodim qo'shilgach, chiqqan shaxsiy havolani nusxalab, o'sha xodimga yuboring.
-      Xodim havolani ochib botni ishga tushirsa, tizim uni avtomatik taniydi.
+      💡 Xodim qo'shilgach, chiqqan vaqtinchalik parolni nusxalab, o'sha xodimga yuboring.
+      Xodim login sifatida Teacher ID'sini, parol sifatida shu ko'rsatilgan parolni kiritadi.
     </p>
   `;
 
@@ -4374,7 +4362,7 @@ async function renderEmployeesList(box, me) {
         }),
       });
       msg.innerHTML = `<span class="badge ok">✅ Qo'shildi</span>`;
-      if (res.link) showLinkModal(res.link, fullName);
+      if (res.password) showPasswordModal(res.password, fullName);
       setTimeout(() => renderEmployeesList(box, me), 700);
     } catch (err) {
       msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
@@ -4385,22 +4373,6 @@ async function renderEmployeesList(box, me) {
     btn.addEventListener("click", () => {
       const emp = employees.find((e) => e.teacher_id === btn.dataset.edit);
       renderEmployeeEditForm(box, me, emp);
-    });
-  });
-
-  box.querySelectorAll("[data-link]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      try {
-        const res = await api(`/api/employees/${btn.dataset.link}/link`);
-        if (res.linked) {
-          safeAlert("Bu xodim allaqachon tizimga bog'langan.");
-        } else {
-          const emp = employees.find((e) => e.teacher_id === btn.dataset.link);
-          showLinkModal(res.link, emp.full_name);
-        }
-      } catch (err) {
-        safeAlert("Xato: " + err.message);
-      }
     });
   });
 
@@ -4564,13 +4536,13 @@ function renderEmployeeEditForm(box, me, emp) {
       <div class="card" id="ed_gradeHistoryCard"><div class="center-box"><div class="spinner"></div></div></div>
     ` : ""}
 
-    <h2>Kirish havolasi</h2>
+    <h2>Parol</h2>
     <div class="card">
       <p style="font-size:13px;color:var(--hint);margin-top:0;">
-        Agar xodim havolasini yo'qotgan yoki qurilmasini almashtirgan bo'lsa, yangi havola generatsiya qiling.
-        Eski havola va joriy bog'lanish shu zahoti bekor bo'ladi.
+        Xodim tizimga o'zining Teacher ID'si (<b>${emp.teacher_id}</b>) va parol bilan kiradi.
+        Agar parolni unutgan bo'lsa yoki almashtirish kerak bo'lsa, shu yerdan yangi parol o'rnating.
       </p>
-      <button class="secondary" id="ed_regenLink">🔗 Yangi havola olish</button>
+      <button class="secondary" id="ed_resetPw">🔑 Parolni tiklash</button>
     </div>
   `;
 
@@ -4616,14 +4588,17 @@ function renderEmployeeEditForm(box, me, emp) {
     }
   });
 
-  box.querySelector("#ed_regenLink").addEventListener("click", () => {
+  box.querySelector("#ed_resetPw").addEventListener("click", () => {
     showConfirm(
-      "Havolani yangilash",
-      `<b>${emp.full_name}</b>ning eski havolasi (va joriy bog'lanishi bo'lsa, u ham) bekor qilinib, yangi havola yaratiladi. Davom etasizmi?`,
+      "Parolni tiklash",
+      `<b>${emp.full_name}</b> uchun yangi tasodifiy parol yaratiladi. Eski parol shu zahoti ishlamay qoladi. Davom etasizmi?`,
       async () => {
         try {
-          const res = await api(`/api/employees/${emp.teacher_id}/link/regenerate`, { method: "POST" });
-          showLinkModal(res.link, emp.full_name);
+          const res = await api(`/api/employees/${emp.teacher_id}/set-password`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+          showPasswordModal(res.password, emp.full_name);
         } catch (err) {
           safeAlert("Xato: " + err.message);
         }
@@ -5376,7 +5351,7 @@ async function renderSettingsTab(box) {
     <h2>🧪 Sinov rejimi</h2>
     <div class="card">
       <p style="font-size:12px;color:var(--hint);margin:0 0 10px;">
-        Bitta Telegram akkaunt bilan boshqa rollarni sinab ko'rish uchun — pastdan xodimni tanlang va
+        Bitta hisob bilan boshqa rollarni sinab ko'rish uchun — pastdan xodimni tanlang va
         "Shu sifatda kirish" tugmasini bosing. Istalgan vaqtda ekran tepasidagi banner orqali
         asl (CEO) hisobingizga xavfsiz qaytishingiz mumkin.
       </p>

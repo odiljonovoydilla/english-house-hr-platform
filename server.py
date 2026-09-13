@@ -1,10 +1,15 @@
 """
-SERVER — English House Mini App
+SERVER — English House HR Platform
 ==================================
 Bitta Python jarayoni uch vazifani bajaradi:
-  1. Telegram botdan keladigan xabarlarni qabul qiladi (/webhook/<secret>)
-  2. Mini App'ning HTML/CSS/JS fayllarini beradi (/)
-  3. Mini App uchun API'ni beradi (/api/...)
+  1. Landing page va ilova (SPA) fayllarini beradi (/  va  /app)
+  2. Login/parol orqali autentifikatsiyani boshqaradi (/api/login)
+  3. Ilova uchun API'ni beradi (/api/...)
+
+Bu — brauzer-birinchi platforma: kirish faqat login (teacher_id) + parol orqali,
+Telegram Mini App yoki Login Widget ORQALI EMAS. Telegram bot integratsiyasi
+(BOT_TOKEN) butunlay ixtiyoriy — sozlansa, faqat topshiriq bildirishnomalari va
+xodimni Telegram'ga ixtiyoriy bog'lash uchun ishlatiladi, kirish uchun emas.
 
 Railway'da ishga tushirish buyrug'i (Procfile'da yozilgan):
     uvicorn server:app --host 0.0.0.0 --port $PORT
@@ -13,6 +18,7 @@ Railway'da ishga tushirish buyrug'i (Procfile'da yozilgan):
 import os
 import hmac
 import hashlib
+import secrets
 import json
 import time
 import contextvars
@@ -26,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 import db
+from db import hash_password, verify_password
 from payroll_engine import (
     calc_payroll, calc_avans, calc_rashchyot, calc_effective_kpi_percent, calc_kpi, calc_edu_manager_kpi,
     working_days_in_month, calc_sales_manager_daily, calc_sales_manager_monthly_bonus,
@@ -34,12 +41,13 @@ from payroll_engine import (
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Telegram bot — IXTIYORIY. Faqat topshiriq bildirishnomalari va xodimni ixtiyoriy
+# Telegram'ga bog'lash uchun ishlatiladi. Kirish (login) buning bilan bog'liq emas.
+BOT_TOKEN = os.getenv("BOT_TOKEN") or None
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "changeme")
 PUBLIC_URL = os.getenv("PUBLIC_URL", "")  # masalan: https://your-app.up.railway.app
 
-# Brauzerdagi sessiya cookie'sini imzolash uchun (Telegram Login Widget orqali kirilganda).
-# Alohida qo'yilmasa WEBHOOK_SECRET'dan foydalanadi — lekin productionda alohida qiymat tavsiya etiladi.
+# Brauzer sessiya cookie'sini imzolash uchun.
 SESSION_SECRET = os.getenv("SESSION_SECRET", WEBHOOK_SECRET)
 SESSION_MAX_AGE = 60 * 60 * 24 * 30  # 30 kun
 
@@ -48,13 +56,10 @@ SESSION_MAX_AGE = 60 * 60 * 24 * 30  # 30 kun
 # har bir so'rov boshida shu contextvar'ga yozib, o'sha yerdan o'qiymiz.
 _session_cookie_ctx: contextvars.ContextVar = contextvars.ContextVar("session_cookie", default=None)
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN topilmadi. Railway Variables bo'limida qo'shing.")
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else None
 
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
-# Botning @username'i — startup vaqtida getMe orqali avtomatik olinadi,
-# bir martalik havolalarni (https://t.me/<username>?start=<token>) qurish uchun kerak.
+# Botning @username'i — sozlangan bo'lsa, startup vaqtida getMe orqali avtomatik olinadi,
+# ixtiyoriy bir martalik Telegram-bog'lash havolalarini qurish uchun kerak.
 BOT_USERNAME = os.getenv("BOT_USERNAME") or None
 
 app = FastAPI()
@@ -88,7 +93,7 @@ async def capture_session_cookie(request: Request, call_next):
 @app.on_event("startup")
 async def fetch_bot_username():
     global BOT_USERNAME
-    if BOT_USERNAME:
+    if BOT_USERNAME or not BOT_TOKEN:
         return
     try:
         async with httpx.AsyncClient() as client:
@@ -115,22 +120,12 @@ def health():
 
 
 # =========================================================
-# BRAUZERDA KIRISH — Telegram Login Widget
-# (Mini App'dan mustaqil qo'shimcha kirish yo'li; Mini App'ning o'zi o'zgarmaydi)
+# BRAUZERDA KIRISH — Login (teacher_id) + Parol
 # =========================================================
 
 @app.get("/login")
 def login_page():
-    bot_username = BOT_USERNAME or ""
-    auth_url = f"{PUBLIC_URL}/api/telegram-login-callback" if PUBLIC_URL else "/api/telegram-login-callback"
-    widget = (
-        f'<script async src="https://telegram.org/js/telegram-widget.js?22" '
-        f'data-telegram-login="{bot_username}" data-size="large" '
-        f'data-auth-url="{auth_url}" data-request-access="write"></script>'
-        if bot_username else
-        '<p class="error-box">Bot username hali aniqlanmadi — birozdan so\'ng qayta urinib ko\'ring.</p>'
-    )
-    html = f"""<!DOCTYPE html>
+    html = """<!DOCTYPE html>
 <html lang="uz">
 <head>
 <meta charset="UTF-8" />
@@ -143,29 +138,60 @@ def login_page():
     <div class="login-card">
       <span class="lp-logo-mark">🏫</span>
       <h1>English House</h1>
-      <p>Davom etish uchun Telegram orqali kiring</p>
-      {widget}
+      <p>Login va parolingiz bilan kiring</p>
+      <form id="loginForm" style="text-align:left;">
+        <label>Login</label>
+        <input id="loginId" type="text" autocomplete="username" required />
+        <label>Parol</label>
+        <input id="loginPw" type="password" autocomplete="current-password" required />
+        <button class="primary" type="submit">Kirish</button>
+        <div id="loginMsg" style="margin-top:10px;font-size:13px;"></div>
+      </form>
     </div>
   </div>
+  <script>
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById("loginMsg");
+      msg.textContent = "Tekshirilmoqda...";
+      try {
+        const res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            teacher_id: document.getElementById("loginId").value.trim(),
+            password: document.getElementById("loginPw").value,
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || "Kirishda xatolik");
+        }
+        window.location.href = "/app";
+      } catch (err) {
+        msg.innerHTML = '<span class="error-box">' + err.message + '</span>';
+      }
+    });
+  </script>
 </body>
 </html>"""
     return HTMLResponse(html)
 
 
-@app.get("/api/telegram-login-callback")
-def telegram_login_callback(request: Request):
-    data = validate_telegram_login(dict(request.query_params))
-    tg_id = int(data["id"])
+@app.post("/api/login")
+async def api_login(request: Request):
+    body = await request.json()
+    teacher_id = (body.get("teacher_id") or "").strip()
+    password = body.get("password") or ""
+    if not teacher_id or not password:
+        raise HTTPException(status_code=400, detail="Login va parol kiritilishi shart")
 
-    emp = db.get_employee_by_telegram_id(tg_id)
-    if not emp:
-        raise HTTPException(
-            status_code=403,
-            detail="Siz tizimda ro'yxatdan o'tmagansiz. Administratordan shaxsiy havola so'rang.",
-        )
+    emp = db.get_employee(teacher_id)
+    if not emp or not emp["active"] or not verify_password(password, emp["password_hash"]):
+        raise HTTPException(status_code=401, detail="Login yoki parol noto'g'ri")
 
     token = create_session_token(emp["teacher_id"])
-    resp = RedirectResponse(url="/app")
+    resp = JSONResponse({"ok": True})
     resp.set_cookie(
         "eh_session", token,
         max_age=SESSION_MAX_AGE, httponly=True, secure=True, samesite="lax",
@@ -181,10 +207,13 @@ def api_logout():
 
 
 # =========================================================
-# TELEGRAM WEBHOOK — /start bosilganda Mini App tugmasini yuboradi
+# TELEGRAM BILDIRISHNOMALARI — IXTIYORIY (BOT_TOKEN sozlansagina ishlaydi)
+# Kirish/login bunga bog'liq emas; faqat topshiriq bildirishnomalari uchun.
 # =========================================================
 
 async def send_message(chat_id: int, text: str, reply_markup: dict = None):
+    if not TELEGRAM_API:
+        return
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
@@ -206,6 +235,11 @@ def _open_app_keyboard():
 
 @app.post("/webhook/{secret}")
 async def telegram_webhook(secret: str, request: Request):
+    """
+    IXTIYORIY: bu platformada kirish faqat login/parol orqali (Telegram orqali emas).
+    Webhook faqat BOT_TOKEN sozlanib, kelajakda bildirishnoma boti sifatida
+    ishlatilmoqchi bo'lsa foydali — /start bosilganda saytga havola yuboradi, xolos.
+    """
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Noto'g'ri webhook manzili")
 
@@ -218,114 +252,15 @@ async def telegram_webhook(secret: str, request: Request):
     text = message.get("text", "")
 
     if text.startswith("/start"):
-        parts = text.split(maxsplit=1)
-        payload = parts[1].strip() if len(parts) > 1 else None
-
-        if payload:
-            # Bir martalik havola orqali kelmoqda — xodimni shu telegram_id bilan bog'laymiz
-            teacher_id = db.link_via_token(payload, chat_id)
-            if teacher_id:
-                emp = db.get_employee(teacher_id)
-                await send_message(
-                    chat_id,
-                    f"✅ Xush kelibsiz, <b>{emp['full_name']}</b>! Tizimga muvaffaqiyatli bog'landingiz.",
-                    reply_markup=_open_app_keyboard(),
-                )
-                return {"ok": True}
-
-            # Token endi amal qilmaydi (ilgari ishlatilgan) — lekin bu odam ALLAQACHON
-            # bog'langan bo'lishi mumkin va shunchaki eski (bir martalik) havolasini qayta
-            # ochayotgan bo'lishi mumkin. Shu holatda ham tugmani yuboramiz — shunda xodim
-            # bir marta olgan havolasini istagancha marta qayta ishlatib, ilovani ochaveradi.
-            emp = db.get_employee_by_telegram_id(chat_id)
-            if emp:
-                await send_message(
-                    chat_id,
-                    "Xush kelibsiz! Tizimni ochish uchun tugmani bosing 👇",
-                    reply_markup=_open_app_keyboard(),
-                )
-            else:
-                await send_message(
-                    chat_id,
-                    "❌ Havola noto'g'ri yoki eskirgan. Administratorga murojaat qiling.",
-                )
-            return {"ok": True}
-
-        # Payloadsiz /start — allaqachon bog'langan bo'lsa tugmani yuboramiz
-        emp = db.get_employee_by_telegram_id(chat_id)
-        if emp:
-            await send_message(
-                chat_id,
-                "Xush kelibsiz! Tizimni ochish uchun tugmani bosing 👇",
-                reply_markup=_open_app_keyboard(),
-            )
-        else:
-            await send_message(
-                chat_id,
-                "Sizda shaxsiy kirish havolasi topilmadi. Administratordan havola so'rang.",
-            )
+        await send_message(
+            chat_id,
+            "Xush kelibsiz! Tizimga kirish uchun quyidagi tugmani bosing 👇",
+            reply_markup=_open_app_keyboard(),
+        )
     else:
-        await send_message(chat_id, "Tizimni ochish uchun /start yuboring.")
+        await send_message(chat_id, "Tizimga kirish uchun /start yuboring.")
 
     return {"ok": True}
-
-
-# =========================================================
-# TELEGRAM MINI APP — initData tekshiruvi (rasmiy Telegram algoritmi)
-# =========================================================
-
-def validate_init_data(init_data: str) -> dict:
-    """
-    Telegram'ning rasmiy Mini App validatsiya algoritmi.
-    https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
-    """
-    try:
-        parsed = dict(parse_qsl(init_data, strict_parsing=True))
-    except ValueError:
-        raise HTTPException(status_code=401, detail="initData noto'g'ri formatda")
-
-    received_hash = parsed.pop("hash", None)
-    if not received_hash:
-        raise HTTPException(status_code=401, detail="hash topilmadi")
-
-    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
-    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
-    computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-
-    if not hmac.compare_digest(computed_hash, received_hash):
-        raise HTTPException(status_code=401, detail="Imzo mos kelmadi — ruxsat yo'q")
-
-    user_json = parsed.get("user")
-    if not user_json:
-        raise HTTPException(status_code=401, detail="Foydalanuvchi ma'lumoti topilmadi")
-
-    return json.loads(user_json)
-
-
-def validate_telegram_login(params: dict) -> dict:
-    """
-    Telegram Login Widget validatsiyasi — Mini App initData'dan farqli algoritm ishlatadi
-    (https://core.telegram.org/widgets/login#checking-authorization).
-    Bu faqat brauzerda (Telegram tashqarisida) "Telegram orqali kirish" tugmasi uchun ishlatiladi;
-    Mini App'ning o'zi hamon yuqoridagi validate_init_data orqali tekshiriladi — ikkisi mustaqil.
-    """
-    data = dict(params)
-    received_hash = data.pop("hash", None)
-    if not received_hash:
-        raise HTTPException(status_code=401, detail="hash topilmadi")
-
-    check_string = "\n".join(f"{k}={v}" for k, v in sorted(data.items()) if v is not None)
-    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
-    computed_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
-
-    if not hmac.compare_digest(computed_hash, received_hash):
-        raise HTTPException(status_code=401, detail="Imzo mos kelmadi — ruxsat yo'q")
-
-    auth_date = int(data.get("auth_date", 0))
-    if time.time() - auth_date > 86400:
-        raise HTTPException(status_code=401, detail="Havola muddati o'tgan — qaytadan urinib ko'ring")
-
-    return data
 
 
 def create_session_token(teacher_id: str) -> str:
@@ -350,40 +285,37 @@ def verify_session_token(token: str):
     return teacher_id
 
 
-def get_current_employee(x_telegram_init_data: str = Header(None)):
-    if x_telegram_init_data:
-        tg_user = validate_init_data(x_telegram_init_data)
-        tg_id = tg_user["id"]
-
-        # Sinov rejimi (Test Mode) — HECH QACHON haqiqiy telegram_id'ga tegilmaydi,
-        # faqat "kim sifatida ko'rilyapti" sessiyasi orqali vaqtincha almashtiriladi.
-        impersonating_id = db.get_impersonation(tg_id)
-        if impersonating_id:
-            impersonated = db.get_employee(impersonating_id)
-            if impersonated:
-                return impersonated
-            # Impersonatsiya qilingan xodim o'chirilgan/topilmagan bo'lsa — sessiyani tozalab, asl holatga qaytamiz
-            db.clear_impersonation(tg_id)
-
-        emp = db.get_employee_by_telegram_id(tg_id)
-        if emp:
-            return emp
-
-        raise HTTPException(
-            status_code=403,
-            detail="Siz tizimda ro'yxatdan o'tmagansiz. Administratordan shaxsiy havola so'rang.",
-        )
-
-    # Mini App initData yo'q bo'lsa — brauzer sessiyasi (Telegram Login Widget orqali) tekshiriladi
+def _get_real_teacher_id() -> str:
+    """Sessiya cookie'sidan HAQIQIY (sinov rejimi/impersonatsiyaga bog'liq bo'lmagan) teacher_id."""
     eh_session = _session_cookie_ctx.get()
-    if eh_session:
-        teacher_id = verify_session_token(eh_session)
-        if teacher_id:
-            emp = db.get_employee(teacher_id)
-            if emp:
-                return emp
+    if not eh_session:
+        raise HTTPException(status_code=401, detail="Kirish talab qilinadi")
+    teacher_id = verify_session_token(eh_session)
+    if not teacher_id:
+        raise HTTPException(status_code=401, detail="Sessiya yaroqsiz yoki muddati tugagan")
+    return teacher_id
 
-    raise HTTPException(status_code=401, detail="initData yuborilmadi")
+
+def get_current_employee(x_telegram_init_data: str = Header(None)):
+    """
+    Barcha endpoint'lar shu funksiyani chaqiradi. Parametr nomi tarixiy sabablarga ko'ra
+    saqlanib qolgan (ko'p joyda hali ham shu nom bilan chaqiriladi), lekin bu platformada
+    kirish FAQAT login/parol sessiyasi orqali — Telegram bilan bog'liq emas.
+    """
+    real_teacher_id = _get_real_teacher_id()
+
+    # Sinov rejimi (Test Mode) — CEO boshqa xodim sifatida ko'rish uchun vaqtincha almashtiradi.
+    impersonating_id = db.get_impersonation(real_teacher_id)
+    if impersonating_id:
+        impersonated = db.get_employee(impersonating_id)
+        if impersonated:
+            return impersonated
+        db.clear_impersonation(real_teacher_id)
+
+    emp = db.get_employee(real_teacher_id)
+    if not emp or not emp["active"]:
+        raise HTTPException(status_code=403, detail="Hisobingiz faol emas. Administratorga murojaat qiling.")
+    return emp
 
 
 def require_admin(emp) -> None:
@@ -401,12 +333,6 @@ def require_ceo(emp) -> None:
     """Faqat CEO — tizim sozlamalari (grade narxlari, foizlar) uchun. Direktor ham kirmaydi."""
     if emp["role"] != "CEO":
         raise HTTPException(status_code=403, detail="Bu amal uchun ruxsatingiz yo'q")
-
-
-def _build_link(token: str) -> str:
-    if not BOT_USERNAME:
-        return None
-    return f"https://t.me/{BOT_USERNAME}?start={token}"
 
 
 def _prev_month(month: str) -> str:
@@ -942,6 +868,8 @@ async def api_add_employee(request: Request, x_telegram_init_data: str = Header(
     if db.get_employee(body["teacher_id"]):
         raise HTTPException(status_code=400, detail="Bu Teacher ID allaqachon mavjud")
 
+    password = body.get("password") or secrets.token_urlsafe(6)
+
     db.add_employee(
         teacher_id=body["teacher_id"],
         full_name=body["full_name"],
@@ -952,9 +880,27 @@ async def api_add_employee(request: Request, x_telegram_init_data: str = Header(
         fixed_salary=float(body["fixed_salary"]) if body.get("fixed_salary") is not None else None,
         subject=body.get("subject"),
         revenue_percent=float(body["revenue_percent"]) if body.get("revenue_percent") is not None else None,
+        password_hash=hash_password(password),
     )
-    token = db.generate_link_token(body["teacher_id"])
-    return {"ok": True, "link": _build_link(token)}
+    # Parol shu yerda ochiq matnda faqat BIR MARTA qaytariladi — admin uni xodimga yetkazadi.
+    return {"ok": True, "teacher_id": body["teacher_id"], "password": password}
+
+
+@app.post("/api/employees/{teacher_id}/set-password")
+async def api_set_employee_password(teacher_id: str, request: Request, x_telegram_init_data: str = Header(None)):
+    """Admin xodim uchun parolni o'rnatadi/tiklaydi. Parol berilmasa, tasodifiy vaqtinchalik parol yaratiladi."""
+    emp = get_current_employee(x_telegram_init_data)
+    require_admin(emp)
+    if not db.get_employee(teacher_id):
+        raise HTTPException(status_code=404, detail="Xodim topilmadi")
+
+    body = await request.json()
+    password = (body.get("password") or "").strip() or secrets.token_urlsafe(6)
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Parol kamida 4 belgidan iborat bo'lishi kerak")
+
+    db.set_password(teacher_id, hash_password(password))
+    return {"ok": True, "password": password}
 
 
 @app.patch("/api/employees/{teacher_id}")
@@ -1018,32 +964,6 @@ def api_activate_employee(teacher_id: str, x_telegram_init_data: str = Header(No
         raise HTTPException(status_code=404, detail="Xodim topilmadi")
     db.update_employee(teacher_id, active=True)
     return {"ok": True}
-
-
-@app.get("/api/employees/{teacher_id}/link")
-def api_get_employee_link(teacher_id: str, x_telegram_init_data: str = Header(None)):
-    emp = get_current_employee(x_telegram_init_data)
-    require_admin(emp)
-    target = db.get_employee(teacher_id)
-    if not target:
-        raise HTTPException(status_code=404, detail="Xodim topilmadi")
-
-    if target["telegram_id"]:
-        return {"linked": True, "link": None}
-
-    token = target["link_token"] or db.generate_link_token(teacher_id)
-    return {"linked": False, "link": _build_link(token)}
-
-
-@app.post("/api/employees/{teacher_id}/link/regenerate")
-def api_regenerate_employee_link(teacher_id: str, x_telegram_init_data: str = Header(None)):
-    emp = get_current_employee(x_telegram_init_data)
-    require_admin(emp)
-    if not db.get_employee(teacher_id):
-        raise HTTPException(status_code=404, detail="Xodim topilmadi")
-
-    token = db.generate_link_token(teacher_id)
-    return {"link": _build_link(token)}
 
 
 # =========================================================
@@ -1885,8 +1805,6 @@ def api_dashboard(month: str, x_telegram_init_data: str = Header(None)):
     all_active = db.list_employees()
     teachers = db.list_employees(role="Teacher")
 
-    unlinked = sum(1 for t in all_active if not t["telegram_id"])
-
     # Top-3/Bottom-3 reytingi — bu o'qituvchilarning o'qitish sifati bo'yicha (scorecard asosida),
     # shuning uchun faqat Teacher rolidagilar bo'yicha hisoblanadi.
     teacher_results = []
@@ -1948,7 +1866,6 @@ def api_dashboard(month: str, x_telegram_init_data: str = Header(None)):
         "total_revenue": round(total_revenue, 2) if total_revenue is not None else None,
         "total_profit": round(total_profit, 2) if total_profit is not None else None,
         "active_employees": len(all_active),
-        "unlinked_employees": unlinked,
         "missing_scorecard": missing,
         "top3": [{"full_name": r["full_name"], "kpi_percent": r["kpi_percent"]} for r in top3],
         "bottom3": [{"full_name": r["full_name"], "kpi_percent": r["kpi_percent"]} for r in bottom3],
@@ -2660,17 +2577,15 @@ def api_company_metrics_range(start: str, end: str, x_telegram_init_data: str = 
 # =========================================================
 
 @app.get("/api/me/test-mode-status")
-def api_test_mode_status(x_telegram_init_data: str = Header(None)):
-    """Joriy Telegram akkaunt sinov rejimida ekanini tekshiradi (rolidan qat'i nazar)."""
-    tg_user = validate_init_data(x_telegram_init_data)
-    tg_id = tg_user["id"]
+def api_test_mode_status():
+    """Joriy sessiya sinov rejimida ekanini tekshiradi (rolidan qat'i nazar)."""
+    real_teacher_id = _get_real_teacher_id()
 
-    impersonating_id = db.get_impersonation(tg_id)
+    impersonating_id = db.get_impersonation(real_teacher_id)
     if not impersonating_id:
         return {"in_test_mode": False}
 
-    # "Asl hisob" — bu Telegram ID'ga haqiqatan bog'langan (hech qachon o'zgarmagan) xodim
-    real_emp = db.get_employee_by_telegram_id(tg_id)
+    real_emp = db.get_employee(real_teacher_id)
     return {
         "in_test_mode": True,
         "original_full_name": real_emp["full_name"] if real_emp else None,
@@ -2679,21 +2594,19 @@ def api_test_mode_status(x_telegram_init_data: str = Header(None)):
 
 
 @app.post("/api/admin/switch-my-link")
-async def api_switch_my_link(request: Request, x_telegram_init_data: str = Header(None)):
+async def api_switch_my_link(request: Request):
     """
     FAQAT CEO uchun: sinov maqsadida boshqa xodim sifatida ko'rishni boshlaydi.
-    MUHIM: bu hech qachon employees.telegram_id ustunini o'zgartirmaydi — faqat
-    "kim sifatida ko'rilyapti" degan vaqtincha xaritalashni saqlaydi. Shuning uchun
-    hech qanday xodimning haqiqiy Telegram bog'lanishi buzilmaydi.
+    MUHIM: bu hech qachon haqiqiy sessiyani o'zgartirmaydi — faqat "kim sifatida
+    ko'rilyapti" degan vaqtincha xaritalashni saqlaydi.
     """
-    tg_user = validate_init_data(x_telegram_init_data)
-    tg_id = tg_user["id"]
+    real_teacher_id = _get_real_teacher_id()
 
-    # Doim HAQIQIY (hech qachon o'zgarmagan) identifikatsiya orqali tekshiramiz —
+    # Doim HAQIQIY (impersonatsiyaga bog'liq bo'lmagan) identifikatsiya orqali tekshiramiz —
     # shuning uchun bir necha marta ketma-ket boshqa-boshqa rolga o'tish ham xavfsiz ishlaydi.
-    real_emp = db.get_employee_by_telegram_id(tg_id)
+    real_emp = db.get_employee(real_teacher_id)
     if not real_emp:
-        raise HTTPException(status_code=403, detail="Siz tizimda ro'yxatdan o'tmagansiz")
+        raise HTTPException(status_code=403, detail="Xodim topilmadi")
     if real_emp["role"] != "CEO":
         raise HTTPException(
             status_code=403,
@@ -2709,21 +2622,20 @@ async def api_switch_my_link(request: Request, x_telegram_init_data: str = Heade
     if not target:
         raise HTTPException(status_code=404, detail="Xodim topilmadi")
 
-    db.set_impersonation(tg_id, target_teacher_id)
+    db.set_impersonation(real_teacher_id, target_teacher_id)
 
     return {"ok": True, "now_full_name": target["full_name"], "now_role": target["role"]}
 
 
 @app.post("/api/admin/exit-test-mode")
-def api_exit_test_mode(x_telegram_init_data: str = Header(None)):
-    """Sinov rejimidan chiqadi. Haqiqiy bog'lanishga hech qachon tegilmagani uchun, shunchaki xaritalashni o'chiramiz."""
-    tg_user = validate_init_data(x_telegram_init_data)
-    tg_id = tg_user["id"]
+def api_exit_test_mode():
+    """Sinov rejimidan chiqadi. Haqiqiy sessiyaga hech qachon tegilmagani uchun, shunchaki xaritalashni o'chiramiz."""
+    real_teacher_id = _get_real_teacher_id()
 
-    if not db.get_impersonation(tg_id):
+    if not db.get_impersonation(real_teacher_id):
         raise HTTPException(status_code=400, detail="Siz sinov rejimida emassiz")
 
-    db.clear_impersonation(tg_id)
+    db.clear_impersonation(real_teacher_id)
     return {"ok": True}
 
 

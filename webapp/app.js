@@ -181,6 +181,22 @@ function showConfirm(title, message, onConfirm) {
   });
 }
 
+function showSuccessModal(title, message) {
+  const overlay = el(`
+    <div class="modal-overlay">
+      <div class="modal-box">
+        <h3>${title}</h3>
+        <div class="modal-message">${message}</div>
+        <div class="modal-actions">
+          <button class="primary" id="modalOk">Yopish</button>
+        </div>
+      </div>
+    </div>
+  `);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#modalOk").addEventListener("click", () => overlay.remove());
+}
+
 function copyText(text) {
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
@@ -4362,7 +4378,7 @@ async function renderEmployeesList(box, me) {
         }),
       });
       msg.innerHTML = `<span class="badge ok">✅ Qo'shildi</span>`;
-      if (res.password) showPasswordModal(res.password, fullName);
+      showSuccessModal("Xodim qo'shildi", `<b>${fullName}</b> tizimga muvaffaqiyatli qo'shildi.`);
       setTimeout(() => renderEmployeesList(box, me), 700);
     } catch (err) {
       msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;

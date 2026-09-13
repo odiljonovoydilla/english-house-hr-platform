@@ -2442,14 +2442,16 @@ def _compute_metric_derived(row) -> dict:
     total_revenue = (row["click_revenue"] or 0) + (row["card_revenue"] or 0) + (row["cash_revenue"] or 0)
     total_expense = (row["click_expense"] or 0) + (row["card_expense"] or 0) + (row["cash_expense"] or 0)
 
+    # O'sish — kun boshi va kun oxiridagi faol o'quvchilar sonining oddiy farqi.
+    # ESLATMA: ilgari bu yerda "start_active + sales_count - left_count - end_active"
+    # hisoblanardi — bu aslida o'sish emas, balki kiritilgan sotuv/chiqish sonlari
+    # kutilgan yakuniy sonni real kiritilgan end_active bilan qanchalik mos kelishini
+    # tekshiruvchi FARQ (residual) edi, va ishorasi ham teskari edi: agar maktab
+    # haqiqatan o'sgan bo'lsa ham, bu formula ko'pincha 0 ga yaqin yoki manfiy chiqib,
+    # "📉 Tushish" deb noto'g'ri ko'rsatilishi mumkin edi.
     growth = None
-    if (
-        row["start_active"] is not None
-        and row["sales_count"] is not None
-        and row["left_count"] is not None
-        and row["end_active"] is not None
-    ):
-        growth = row["start_active"] + row["sales_count"] - row["left_count"] - row["end_active"]
+    if row["start_active"] is not None and row["end_active"] is not None:
+        growth = row["end_active"] - row["start_active"]
 
     return {
         "total_revenue": round(total_revenue, 2),

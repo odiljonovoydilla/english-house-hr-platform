@@ -51,6 +51,12 @@ PUBLIC_URL = os.getenv("PUBLIC_URL", "")  # masalan: https://your-app.up.railway
 SESSION_SECRET = os.getenv("SESSION_SECRET", WEBHOOK_SECRET)
 SESSION_MAX_AGE = 60 * 60 * 24 * 30  # 30 kun
 
+# Xizmat API kaliti — Cowork yoki boshqa tashqi avtomatlashtirish tizimlari uchun DOIMIY
+# (muddati tugamaydigan), o'zgarmas kalit. Faqat pastda ko'rsatilgan bir nechta topshiriqlar
+# endpoint'iga QO'SHIMCHA kirish usuli sifatida ishlaydi — login/parol sessiyasini almashtirmaydi
+# va boshqa hech qanday endpoint'ga ta'sir qilmaydi. .env faylida saqlanadi, kodga yozilmaydi.
+SERVICE_API_KEY = os.getenv("SERVICE_API_KEY") or None
+
 # get_current_employee() ko'plab endpoint'larda oddiy funksiya sifatida (FastAPI in'ektsiyasisiz)
 # chaqiriladi, shuning uchun brauzer sessiya cookie'sini unga alohida parametr qilib emas,
 # har bir so'rov boshida shu contextvar'ga yozib, o'sha yerdan o'qiymiz.
@@ -316,6 +322,50 @@ def get_current_employee(x_telegram_init_data: str = Header(None)):
     if not emp or not emp["active"]:
         raise HTTPException(status_code=403, detail="Hisobingiz faol emas. Administratorga murojaat qiling.")
     return emp
+
+
+def _verify_service_api_key(authorization: str) -> bool:
+    """
+    'Authorization: Bearer <SERVICE_API_KEY>' header'ini tekshiradi.
+    SERVICE_API_KEY .env'da sozlanmagan bo'lsa (bo'sh), doim False qaytaradi — ya'ni bu
+    autentifikatsiya usuli standart holatda O'CHIRILGAN.
+    """
+    if not SERVICE_API_KEY or not authorization:
+        return False
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return False
+    return hmac.compare_digest(token.strip(), SERVICE_API_KEY)
+
+
+def get_current_employee_or_service(x_telegram_init_data: str = Header(None), authorization: str = Header(None)):
+    """
+    Xodim sessiyasi (cookie) BILAN BIRGA — xizmat API kaliti orqali ham kirish imkonini beruvchi
+    qo'shimcha funksiya. FAQAT quyidagi topshiriqlar (tasks) endpoint'larida ishlatiladi:
+      /api/tasks (POST), /api/tasks/all (GET), /api/tasks/{id}/start (POST), /api/tasks/{id}/done (POST)
+    Bu Cowork yoki boshqa tashqi avtomatlashtirish tizimlari topshiriqlarni login/parolsiz,
+    doimiy 'Authorization: Bearer <SERVICE_API_KEY>' header'i orqali boshqarishi uchun qo'shilgan.
+    Boshqa barcha endpoint'lar hamon FAQAT get_current_employee() (login/parol sessiyasi) orqali
+    ishlaydi — bu funksiya ularga ta'sir qilmaydi.
+
+    Kalit to'g'ri bo'lsa, ADMIN_TEACHER_ID xodimi (CEO) nomidan harakat qiladi va shu 4 ta
+    endpoint'dagi rol/egalik cheklovlari (masalan, faqat topshiriq egasi "Bajarildi" bosishi)
+    chetlab o'tiladi — chunki xizmat kaliti administrator darajasidagi ishonchli avtomatlashtirish
+    uchun mo'ljallangan.
+
+    Qaytaradi: (xodim_dict, is_service: bool)
+    """
+    if _verify_service_api_key(authorization):
+        admin_teacher_id = os.getenv("ADMIN_TEACHER_ID")
+        emp = db.get_employee(admin_teacher_id) if admin_teacher_id else None
+        if not emp:
+            raise HTTPException(
+                status_code=500,
+                detail="Xizmat kaliti uchun ADMIN_TEACHER_ID xodimi topilmadi. .env'dagi "
+                       "ADMIN_TEACHER_ID to'g'ri sozlanganini tekshiring.",
+            )
+        return emp, True
+    return get_current_employee(x_telegram_init_data), False
 
 
 def require_admin(emp) -> None:
@@ -2694,8 +2744,12 @@ def _todaystr_for_tasks():
 
 
 @app.post("/api/tasks")
-async def api_create_task(request: Request, x_telegram_init_data: str = Header(None)):
-    emp = get_current_employee(x_telegram_init_data)
+async def api_create_task(
+    request: Request,
+    x_telegram_init_data: str = Header(None),
+    authorization: str = Header(None),
+):
+    emp, _is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
     body = await request.json()
 
     text = (body.get("text") or "").strip()
@@ -2766,9 +2820,10 @@ def api_tasks_sent(x_telegram_init_data: str = Header(None)):
 
 
 @app.get("/api/tasks/all")
-def api_tasks_all(x_telegram_init_data: str = Header(None)):
-    emp = get_current_employee(x_telegram_init_data)
-    require_owner(emp)
+def api_tasks_all(x_telegram_init_data: str = Header(None), authorization: str = Header(None)):
+    emp, is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
+    if not is_service:
+        require_owner(emp)
     rows = db.list_tasks_all()
     cat_labels = _task_category_labels_map()
     penalties = db.get_task_role_penalties()
@@ -2776,35 +2831,45 @@ def api_tasks_all(x_telegram_init_data: str = Header(None)):
 
 
 @app.post("/api/tasks/{task_id}/start")
-def api_task_mark_in_progress(task_id: int, x_telegram_init_data: str = Header(None)):
+def api_task_mark_in_progress(
+    task_id: int,
+    x_telegram_init_data: str = Header(None),
+    authorization: str = Header(None),
+):
     """Xodim 'Jarayonda' tugmasini aniq bosganda chaqiriladi — avtomatik emas."""
-    emp = get_current_employee(x_telegram_init_data)
+    emp, is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Topshiriq topilmadi")
 
-    is_recipient = (task["to_teacher_id"] == emp["teacher_id"]) or (
-        task["to_teacher_id"] is None and task["to_role"] == emp["role"]
-    )
-    if not is_recipient:
-        raise HTTPException(status_code=403, detail="Bu topshiriq sizga tegishli emas")
+    if not is_service:
+        is_recipient = (task["to_teacher_id"] == emp["teacher_id"]) or (
+            task["to_teacher_id"] is None and task["to_role"] == emp["role"]
+        )
+        if not is_recipient:
+            raise HTTPException(status_code=403, detail="Bu topshiriq sizga tegishli emas")
 
     db.mark_task_in_progress(task_id, emp["teacher_id"])
     return {"ok": True}
 
 
 @app.post("/api/tasks/{task_id}/done")
-async def api_task_mark_done(task_id: int, x_telegram_init_data: str = Header(None)):
-    emp = get_current_employee(x_telegram_init_data)
+async def api_task_mark_done(
+    task_id: int,
+    x_telegram_init_data: str = Header(None),
+    authorization: str = Header(None),
+):
+    emp, is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
     task = db.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Topshiriq topilmadi")
 
-    is_recipient = (task["to_teacher_id"] == emp["teacher_id"]) or (
-        task["to_teacher_id"] is None and task["to_role"] == emp["role"]
-    )
-    if not is_recipient:
-        raise HTTPException(status_code=403, detail="Bu topshiriq sizga tegishli emas")
+    if not is_service:
+        is_recipient = (task["to_teacher_id"] == emp["teacher_id"]) or (
+            task["to_teacher_id"] is None and task["to_role"] == emp["role"]
+        )
+        if not is_recipient:
+            raise HTTPException(status_code=403, detail="Bu topshiriq sizga tegishli emas")
 
     db.mark_task_done(task_id, emp["teacher_id"])
 

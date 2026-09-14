@@ -1742,3 +1742,68 @@ def save_ai_summary(summary_type: str, ref_key: str, summary_text: str, generate
             summary_text=excluded.summary_text, generated_at=excluded.generated_at, generated_by=excluded.generated_by
     """, (summary_type, ref_key, summary_text, now_iso(), generated_by))
     _conn.commit()
+
+
+# ---------- Sinov (test) ma'lumotlarini tozalash ----------
+
+# Sinov davrida kiritilgan, aniq xodimga bog'liq bo'lgan jadvallar. Real ishlab chiqishga
+# o'tishdan oldin bu jadvallardan ko'rsatilgan teacher_id'larga tegishli qatorlar o'chiriladi.
+_TEACHER_SCOPED_TABLES_FOR_PURGE = [
+    "scorecards", "staff_performance", "edu_manager_scorecards",
+    "sales_manager_daily_logs", "administrator_daily_logs", "edu_manager_daily_logs",
+    "bonuses", "advances", "settlements", "employee_grade_history", "revenues",
+]
+
+
+def purge_test_employees(test_teacher_ids: list) -> dict:
+    """
+    Ko'rsatilgan teacher_id'lar (va faqat ular) uchun: xodimning o'zi HAMDA unga bog'liq
+    barcha performance/moliyaviy yozuvlarni butunlay o'chiradi. Bundan tashqari, hozircha
+    platformada REAL kompaniya tarixi hali kiritilmagan bo'lgani uchun (real ma'lumot
+    keyinroq alohida import qilinadi), quyidagi umumiy (teacher_id'ga bog'liq bo'lmagan)
+    jadvallar ham butunlay tozalanadi: company_metrics (kunlik agregat ko'rsatkichlar,
+    faqat sinov kunlik hisobotlaridan avtomatik yig'ilgan), ai_summaries (sinov ma'lumotlari
+    asosidagi keshlangan AI xulosalari), test_mode_sessions (sinov rejimi holati).
+
+    CEO/Director hisoblari va ularning employees qatoridagi mavjud qiymatlari (masalan,
+    Direktorning maoshi) BUTUNLAY DAXLSIZ qoladi — bu funksiya faqat berilgan
+    test_teacher_ids ro'yxati bilan ishlaydi.
+
+    Qaytaradi: {"deleted_employees": [...], "counts": {jadval: o'chirilgan_qator_soni}}
+    """
+    if not test_teacher_ids:
+        return {"deleted_employees": [], "counts": {}}
+
+    cur = _conn.cursor()
+    placeholders = ",".join("?" * len(test_teacher_ids))
+    counts = {}
+
+    for table in _TEACHER_SCOPED_TABLES_FOR_PURGE:
+        cur.execute(f"DELETE FROM {table} WHERE teacher_id IN ({placeholders})", test_teacher_ids)
+        counts[table] = cur.rowcount
+
+    # Topshiriqlar — sinov xodimi yuborgan YOKI qabul qilgan har qanday topshiriq
+    task_ids = [r["id"] for r in cur.execute(
+        f"SELECT id FROM tasks WHERE from_teacher_id IN ({placeholders}) OR to_teacher_id IN ({placeholders})",
+        test_teacher_ids + test_teacher_ids,
+    ).fetchall()]
+    if task_ids:
+        tph = ",".join("?" * len(task_ids))
+        cur.execute(f"DELETE FROM task_comments WHERE task_id IN ({tph})", task_ids)
+        cur.execute(f"DELETE FROM tasks WHERE id IN ({tph})", task_ids)
+    counts["tasks"] = len(task_ids)
+
+    # Umumiy (sinov davriga tegishli) jadvallar — real tarix hali kiritilmagan
+    cur.execute("DELETE FROM company_metrics")
+    counts["company_metrics"] = cur.rowcount
+    cur.execute("DELETE FROM ai_summaries")
+    counts["ai_summaries"] = cur.rowcount
+    cur.execute("DELETE FROM test_mode_sessions")
+    counts["test_mode_sessions"] = cur.rowcount
+
+    # Eng oxirida — xodimning o'zi
+    cur.execute(f"DELETE FROM employees WHERE teacher_id IN ({placeholders})", test_teacher_ids)
+    counts["employees"] = cur.rowcount
+
+    _conn.commit()
+    return {"deleted_employees": test_teacher_ids, "counts": counts}

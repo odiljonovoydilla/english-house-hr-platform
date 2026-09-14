@@ -3196,3 +3196,27 @@ async def api_admin_purge_test_employees(request: Request, x_telegram_init_data:
 
     result = db.purge_test_employees(teacher_ids)
     return {"ok": True, **result}
+
+
+# ============================================================
+# Eski tizimdan real ma'lumotlarni import qilish â faqat CEO/Director
+# ============================================================
+
+@app.post("/api/admin/import-legacy-data")
+async def api_admin_import_legacy_data(request: Request, x_telegram_init_data: str = Header(None)):
+    """
+    Eski EH_HR_System'dan (Railway "elegant-success" loyihasi) eksport qilingan,
+    oldindan tozalangan real ma'lumotlarni (xodimlar, scorecardlar, tushum,
+    avans/rashchyot, grade tarixi, kompaniya kunlik ko'rsatkichlari, sozlamalar)
+    yangi platformaga bir martalik yozadi.
+
+    Xavfsizlik: faqat CEO/Director chaqira oladi. Qayta chaqirilsa xavfsiz â
+    xodimlar qayta yaratilmaydi (mavjudlari o'tkazib yuboriladi), boshqa
+    jadvallar esa UPSERT qilinadi (dublikat bo'lmaydi).
+    """
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+
+    payload = await request.json()
+    result = db.import_legacy_data(payload)
+    return {"ok": True, **result}

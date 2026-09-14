@@ -3156,3 +3156,43 @@ def api_reports_tasks_summary(start: str, end: str, x_telegram_init_data: str = 
     by_role.sort(key=lambda x: -x["total"])
 
     return {"start": start, "end": end, "overall": overall, "by_role": by_role}
+
+
+# ============================================================
+# Sinov (test) ma'lumotlarini tozalash — faqat CEO/Director
+# ============================================================
+
+@app.post("/api/admin/purge-test-employees")
+async def api_admin_purge_test_employees(request: Request, x_telegram_init_data: str = Header(None)):
+    """
+    Ko'rsatilgan teacher_id'lar (va faqat ular) uchun: xodim va unga bog'liq barcha
+    scorecard/KPI/kunlik hisobot/avans/rashchyot/bonus/tushum yozuvlarini butunlay
+    o'chiradi, shu xodim ishtirokidagi topshiriqlarni tozalaydi, va hozircha real
+    kompaniya tarixi kiritilmagan bo'lgani uchun company_metrics/ai_summaries/
+    test_mode_sessions jadvallarini ham butunlay tozalaydi (bular faqat sinov kunlik
+    hisobotlaridan avtomatik yig'ilgan edi).
+
+    Xavfsizlik: faqat CEO/Director chaqira oladi; ro'yxatda CEO/Director rolidagi
+    xodim bo'lsa, so'rov butunlay rad etiladi (o'z-o'zini yoki boshqa rahbarni bu
+    orqali o'chirib bo'lmaydi).
+    """
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+
+    body = await request.json()
+    teacher_ids = body.get("teacher_ids") or []
+    if not isinstance(teacher_ids, list) or not teacher_ids:
+        raise HTTPException(status_code=400, detail="teacher_ids ro'yxati bo'sh yoki noto'g'ri")
+
+    for tid in teacher_ids:
+        target = db.get_employee(tid)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"Xodim topilmadi: {tid}")
+        if target["role"] in ("CEO", "Director"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{tid}' — CEO/Director hisobi, bu endpoint orqali o'chirib bo'lmaydi",
+            )
+
+    result = db.purge_test_employees(teacher_ids)
+    return {"ok": True, **result}

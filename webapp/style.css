@@ -700,6 +700,54 @@ textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 
 .task-time-chip.task-time-soon { background: var(--orange-tint); color: var(--orange); }
 .task-time-chip.task-time-overdue { background: var(--red-tint); color: var(--red); }
 .task-unread-chip { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 800; background: var(--red); color: #fff; }
+
+/* ---------- Xodimlar reytingi ---------- */
+.rating-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--divider);
+}
+.rating-row:last-child { border-bottom: none; }
+.rating-rank {
+  width: 32px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+.rating-main { flex: 1; min-width: 0; }
+.rating-name { font-size: 14px; font-weight: 700; }
+.rating-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+.rating-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.rating-metrics span {
+  background: var(--surface-2);
+  border-radius: 20px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.rating-score {
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+.rating-score-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
 .task-actions-row { display: flex; gap: 8px; margin-top: 4px; }
 .task-actions-row .mini-btn { flex: 1; }
 

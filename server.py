@@ -22,7 +22,7 @@ import secrets
 import json
 import time
 import contextvars
-from datetime import date
+from datetime import date, datetime
 from urllib.parse import parse_qsl
 
 import httpx
@@ -3244,6 +3244,175 @@ def api_reports_tasks_summary(start: str, end: str, x_telegram_init_data: str = 
     by_role.sort(key=lambda x: -x["total"])
 
     return {"start": start, "end": end, "overall": overall, "by_role": by_role}
+
+
+def _parse_task_dt(value):
+    """'YYYY-MM-DD HH:MM:SS' -> datetime. Noto'g'ri/bo'sh qiymatda None."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _avg_minutes(values):
+    return round(sum(values) / len(values)) if values else None
+
+
+def _task_speed_points(avg_done_minutes):
+    """
+    Tezlik balli (20 ballgacha) — o'rtacha bajarish vaqtiga qarab.
+    Chegaralar qat'iy va oldindan ma'lum: xodimning bali boshqalarning
+    natijasiga bog'liq emas, faqat o'z tezligiga bog'liq.
+    """
+    if avg_done_minutes is None:
+        return 0
+    hours = avg_done_minutes / 60
+    if hours <= 4:
+        return 20
+    if hours <= 24:
+        return 15
+    if hours <= 48:
+        return 10
+    if hours <= 72:
+        return 5
+    return 0
+
+
+@app.get("/api/reports/tasks-rating")
+def api_reports_tasks_rating(start: str, end: str, x_telegram_init_data: str = Header(None)):
+    """
+    Topshiriqlar bo'yicha XODIMLAR REYTINGI — kim qancha vaqtda ochadi, boshlaydi
+    va bajaradi, nechtasini muddatida ulguradi.
+
+    Ball (0-100) uch qismdan yig'iladi:
+      • 50 ball — bajarish ulushi (bajarilgan / berilgan)
+      • 30 ball — muddatida bajarish ulushi (muddatida / bajarilgan)
+      • 20 ball — o'rtacha bajarish tezligi (<=4 soat: 20, <=24: 15, <=48: 10, <=72: 5)
+
+    Faqat ANIQ xodimga yuborilgan topshiriqlar hisobga olinadi — butun rolga
+    yuborilganlarda kim bajarishi aniq bo'lmagani uchun shaxsiy reytingga kirmaydi.
+    """
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+
+    rows = db.list_tasks_in_range(start, end)
+    employees = db.list_employees()
+    emp_by_id = {e["teacher_id"]: e for e in employees}
+    role_penalties = db.get_task_role_penalties()
+    today = _todaystr_for_tasks()
+
+    stats = {}
+
+    for t in rows:
+        eid = t["to_teacher_id"]
+        if not eid:
+            continue
+        target = emp_by_id.get(eid)
+        if not target:
+            continue
+
+        if eid not in stats:
+            stats[eid] = {
+                "teacher_id": eid,
+                "full_name": target["full_name"],
+                "role": target["role"],
+                "role_label": ROLE_LABELS_UZ.get(target["role"], target["role"]),
+                "assigned": 0, "done": 0, "pending": 0, "overdue": 0,
+                "done_on_time": 0, "done_late": 0, "total_penalty": 0,
+                "_seen": [], "_start": [], "_done": [],
+            }
+        s = stats[eid]
+        s["assigned"] += 1
+
+        created = _parse_task_dt(t["created_at"])
+        seen = _parse_task_dt(t["seen_at"])
+        started = _parse_task_dt(t["in_progress_at"])
+        done = _parse_task_dt(t["done_at"])
+
+        if created and seen:
+            s["_seen"].append((seen - created).total_seconds() / 60)
+        if created and started:
+            s["_start"].append((started - created).total_seconds() / 60)
+
+        if t["status"] == "done":
+            s["done"] += 1
+            if created and done:
+                s["_done"].append((done - created).total_seconds() / 60)
+            # Muddatida ulgurdimi? (muddat — kun aniqligida)
+            if t["deadline"] and done:
+                if done.strftime("%Y-%m-%d") <= t["deadline"]:
+                    s["done_on_time"] += 1
+                else:
+                    s["done_late"] += 1
+            else:
+                s["done_on_time"] += 1
+        else:
+            s["pending"] += 1
+            if t["deadline"] and t["deadline"] < today:
+                s["overdue"] += 1
+                s["total_penalty"] += role_penalties.get(target["role"], 0)
+
+    rating = []
+    for s in stats.values():
+        avg_seen = _avg_minutes(s.pop("_seen"))
+        avg_start = _avg_minutes(s.pop("_start"))
+        avg_done = _avg_minutes(s.pop("_done"))
+
+        completion_rate = round(s["done"] / s["assigned"] * 100) if s["assigned"] else 0
+        on_time_rate = round(s["done_on_time"] / s["done"] * 100) if s["done"] else 0
+
+        completion_points = round(s["done"] / s["assigned"] * 50, 1) if s["assigned"] else 0
+        on_time_points = round(s["done_on_time"] / s["done"] * 30, 1) if s["done"] else 0
+        speed_points = _task_speed_points(avg_done)
+
+        s.update({
+            "avg_seen_minutes": avg_seen,
+            "avg_start_minutes": avg_start,
+            "avg_done_minutes": avg_done,
+            "completion_rate": completion_rate,
+            "on_time_rate": on_time_rate,
+            "points": {
+                "completion": completion_points,
+                "on_time": on_time_points,
+                "speed": speed_points,
+            },
+            "score": round(completion_points + on_time_points + speed_points, 1),
+        })
+        rating.append(s)
+
+    rating.sort(key=lambda x: (-x["score"], x["avg_done_minutes"] if x["avg_done_minutes"] is not None else 10**9))
+    for i, s in enumerate(rating, start=1):
+        s["rank"] = i
+
+    by_role = {}
+    for s in rating:
+        by_role.setdefault(s["role"], []).append(s)
+
+    by_role_out = []
+    for role, members in by_role.items():
+        ranked = []
+        for i, s in enumerate(members, start=1):
+            item = dict(s)
+            item["role_rank"] = i
+            ranked.append(item)
+        by_role_out.append({
+            "role": role,
+            "role_label": ROLE_LABELS_UZ.get(role, role),
+            "employees": ranked,
+            "avg_score": round(sum(m["score"] for m in members) / len(members), 1) if members else 0,
+            "total_assigned": sum(m["assigned"] for m in members),
+            "total_done": sum(m["done"] for m in members),
+        })
+    by_role_out.sort(key=lambda r: -r["avg_score"])
+
+    return {
+        "start": start,
+        "end": end,
+        "rating": rating,
+        "by_role": by_role_out,
+    }
 
 
 # ============================================================

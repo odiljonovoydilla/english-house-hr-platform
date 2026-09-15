@@ -4800,6 +4800,14 @@ function renderReportsHome(box) {
         </div>
         <div class="menu-arrow">›</div>
       </div>
+      <div class="menu-card" data-nav="rating">
+        <div class="menu-icon">🏆</div>
+        <div class="menu-text">
+          <div class="menu-label">Xodimlar reytingi</div>
+          <div class="menu-desc">Kim qancha vaqtda bajaradi — umumiy va rollar bo'yicha</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
     </div>
   `;
 
@@ -4808,9 +4816,129 @@ function renderReportsHome(box) {
       if (card.dataset.nav === "teacher") renderTeacherReportSection(box);
       else if (card.dataset.nav === "scorecard") renderScorecardReportSection(box);
       else if (card.dataset.nav === "tasks") renderTasksReportSection(box);
+      else if (card.dataset.nav === "rating") renderTasksRatingSection(box);
       else renderCompanyReportSection(box);
     });
   });
+}
+
+// ---------- Xodimlar reytingi (topshiriqlar bo'yicha) ----------
+
+function _fmtDuration(minutes) {
+  if (minutes === null || minutes === undefined) return "—";
+  if (minutes < 60) return `${minutes} daq`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const m = minutes % 60;
+    return m ? `${hours} soat ${m} daq` : `${hours} soat`;
+  }
+  const days = Math.floor(hours / 24);
+  const h = hours % 24;
+  return h ? `${days} kun ${h} soat` : `${days} kun`;
+}
+
+function _ratingMedal(rank) {
+  return rank === 1 ? "🥇" : rank === 2 ? "🥈" : rank === 3 ? "🥉" : `${rank}.`;
+}
+
+function _scoreColor(score) {
+  if (score >= 80) return "var(--green)";
+  if (score >= 50) return "var(--orange)";
+  return "var(--red)";
+}
+
+function _ratingRowHtml(e, rank) {
+  return `
+    <div class="rating-row">
+      <div class="rating-rank">${_ratingMedal(rank)}</div>
+      <div class="rating-main">
+        <div class="rating-name">${e.full_name}</div>
+        <div class="rating-sub">${e.role_label} · ${e.done}/${e.assigned} bajargan${e.overdue > 0 ? ` · <span style="color:var(--red);">${e.overdue} muddati o'tgan</span>` : ""}</div>
+        <div class="rating-metrics">
+          <span title="O'rtacha: yaratilgandan ochilgunicha">👁️ ${_fmtDuration(e.avg_seen_minutes)}</span>
+          <span title="O'rtacha: yaratilgandan boshlagunicha">🔄 ${_fmtDuration(e.avg_start_minutes)}</span>
+          <span title="O'rtacha: yaratilgandan bajarilgunicha">✅ ${_fmtDuration(e.avg_done_minutes)}</span>
+          <span title="Muddatida bajarilgan ulushi">⏱️ ${e.on_time_rate}%</span>
+        </div>
+      </div>
+      <div class="rating-score" style="color:${_scoreColor(e.score)};">
+        ${e.score}
+        <span class="rating-score-label">ball</span>
+      </div>
+    </div>
+  `;
+}
+
+async function renderTasksRatingSection(box) {
+  box.innerHTML = `<button class="back-btn" id="rtBackBtn">← Orqaga</button><div id="rtInner"></div>`;
+  box.querySelector("#rtBackBtn").addEventListener("click", () => renderReportsHome(box));
+  await renderTasksRatingContent(box.querySelector("#rtInner"));
+}
+
+async function renderTasksRatingContent(box) {
+  const today = _todayDateStr();
+  const monthAgo = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  })();
+
+  box.innerHTML = `
+    <h2>🏆 Xodimlar reytingi</h2>
+    <div class="card">
+      <label>Boshlanish sanasi</label>
+      <input type="date" id="rtStart" value="${monthAgo}" max="${today}" />
+      <label>Tugash sanasi</label>
+      <input type="date" id="rtEnd" value="${today}" max="${today}" />
+    </div>
+    <div id="rtResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+
+  const startInput = box.querySelector("#rtStart");
+  const endInput = box.querySelector("#rtEnd");
+
+  async function load() {
+    const resultBox = box.querySelector("#rtResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/reports/tasks-rating?start=${startInput.value}&end=${endInput.value}`);
+
+      if (!d.rating.length) {
+        resultBox.innerHTML = `<p style="color:var(--hint);font-size:13px;">Bu davrda aniq xodimga yuborilgan topshiriq topilmadi.</p>`;
+        return;
+      }
+
+      const overallHtml = `
+        <h2>📊 Umumiy reyting</h2>
+        <div class="card">${d.rating.map((e) => _ratingRowHtml(e, e.rank)).join("")}</div>
+      `;
+
+      const byRoleHtml = d.by_role.map((r) => `
+        <h2>${r.role_label} <span style="font-size:10px;color:var(--hint);text-transform:none;">(o'rtacha ${r.avg_score} ball · ${r.total_done}/${r.total_assigned} bajarilgan)</span></h2>
+        <div class="card">${r.employees.map((e) => _ratingRowHtml(e, e.role_rank)).join("")}</div>
+      `).join("");
+
+      resultBox.innerHTML = `
+        ${overallHtml}
+        <h2>👥 Rollar bo'yicha</h2>
+        ${byRoleHtml}
+        <div class="card" style="font-size:12px;color:var(--hint);line-height:1.6;">
+          <b>Ball qanday hisoblanadi (100 ball):</b><br/>
+          • <b>50 ball</b> — bajarish ulushi (bajarilgan ÷ berilgan)<br/>
+          • <b>30 ball</b> — muddatida bajarish ulushi (muddatida ÷ bajarilgan)<br/>
+          • <b>20 ball</b> — o'rtacha bajarish tezligi: 4 soatgacha 20, 24 soatgacha 15, 48 soatgacha 10, 72 soatgacha 5 ball<br/><br/>
+          👁️ ochilgunicha · 🔄 boshlangunicha · ✅ bajarilgunicha o'tgan o'rtacha vaqt (topshiriq yaratilgan paytdan boshlab).
+          Faqat aniq xodimga yuborilgan topshiriqlar hisobga olinadi.
+        </div>
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  startInput.addEventListener("change", load);
+  endInput.addEventListener("change", load);
+  load();
 }
 
 async function renderTasksReportSection(box) {

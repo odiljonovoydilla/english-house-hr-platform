@@ -248,7 +248,7 @@ function showPasswordModal(password, name) {
         <h3>${name ? name + " uchun parol" : "Yangi parol"}</h3>
         <div class="modal-message">
           <p style="font-size:13px;color:var(--hint);margin-top:0;">
-            Bu parolni xodimga yetkazing. Login sifatida uning shaxsiy ID'sidan foydalanadi.
+            Bu parolni xodimga yetkazing — u o'z logini bilan birga tizimga kirishda ishlatiladi.
             Parol shu yerda faqat <b>bir marta</b> ko'rsatiladi — keyinroq qayta ko'rish imkoni yo'q.
           </p>
           <input readonly value="${password}" id="pwInput" onclick="this.select()" />
@@ -274,10 +274,20 @@ function showPasswordModal(password, name) {
 // bitta komponentdan foydalanadi — faqat items/dispatch/hero farqlanadi.
 // ============================================================
 
+// "Profilim" har bir rolda bo'ladi — shu sabab u shell darajasida qo'shiladi,
+// har bir rolning o'z ro'yxatiga alohida yozilmaydi.
+const MY_PROFILE_NAV_ITEM = { id: "myprofile", icon: "⚙️", label: "Profilim" };
+
 function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradient, heroLabel }) {
   document.body.classList.add("shell-active");
   appEl.classList.add("shell-mode");
   appEl.innerHTML = "";
+
+  const navItems = [...items, MY_PROFILE_NAV_ITEM];
+  const dispatchTab = (tab, contentBox, currentMe) => {
+    if (tab === MY_PROFILE_NAV_ITEM.id) return renderMyProfileTab(contentBox, currentMe);
+    return dispatch(tab, contentBox, currentMe);
+  };
 
   const theme = getTheme();
   const shell = el(`
@@ -301,7 +311,7 @@ function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradi
           </div>
         </div>
         <nav class="sidebar-nav">
-          ${items.map((it) => `
+          ${navItems.map((it) => `
             <button class="sidebar-item${it.id === activeId ? " active" : ""}" data-tab="${it.id}">
               <span class="sidebar-icon">${it.icon}</span>
               <span class="sidebar-label">${it.label}</span>
@@ -341,7 +351,7 @@ function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradi
       shell.querySelectorAll("[data-tab]").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       closeMobileSidebar();
-      dispatch(btn.dataset.tab, contentBox, me);
+      dispatchTab(btn.dataset.tab, contentBox, me);
     });
   });
 
@@ -356,7 +366,101 @@ function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradi
     window.location.href = "/";
   });
 
-  dispatch(activeId, contentBox, me);
+  dispatchTab(activeId, contentBox, me);
+}
+
+// ============================================================
+// PROFILIM — har bir xodim o'z login va parolini shu yerdan o'zgartiradi
+// ============================================================
+
+const ROLE_LABELS = {
+  CEO: "Bosh direktor",
+  Director: "Direktor",
+  EduManager: "Ta'lim menejeri",
+  Teacher: "O'qituvchi",
+  SubjectTeacher: "Fan o'qituvchisi",
+  Administrator: "Administrator",
+  SalesManager: "Sotuv menejeri",
+};
+
+async function renderMyProfileTab(box, me) {
+  box.innerHTML = `
+    <h2>⚙️ Profilim</h2>
+    <div class="card">
+      <div class="row"><span class="label">Ism familiya</span><span class="value">${me.full_name}</span></div>
+      <div class="row"><span class="label">Lavozim</span><span class="value">${ROLE_LABELS[me.role] || me.role}</span></div>
+      <div class="row"><span class="label">Joriy login</span><span class="value" id="mpCurrentLogin">...</span></div>
+    </div>
+
+    <h2>🔑 Login va parolni o'zgartirish</h2>
+    <div class="card">
+      <p style="font-size:13px;color:var(--hint);margin-top:0;">
+        Xavfsizlik uchun avval joriy parolingizni kiriting. Keyin faqat o'zgartirmoqchi
+        bo'lgan maydonni to'ldiring — qolgani bo'sh qolsa, o'zgarmaydi.
+      </p>
+
+      <label>Joriy parol</label>
+      <input id="mpCurrentPw" type="password" autocomplete="current-password" />
+
+      <label>Yangi login</label>
+      <input id="mpNewLogin" type="text" autocomplete="username" placeholder="Bo'sh qoldirsangiz, o'zgarmaydi" />
+
+      <label>Yangi parol</label>
+      <input id="mpNewPw" type="password" autocomplete="new-password" placeholder="Bo'sh qoldirsangiz, o'zgarmaydi" />
+
+      <label>Yangi parolni takrorlang</label>
+      <input id="mpNewPw2" type="password" autocomplete="new-password" />
+
+      <button class="primary" id="mpSaveBtn">Saqlash</button>
+      <div id="mpMsg" style="margin-top:8px;font-size:13px;"></div>
+    </div>
+  `;
+
+  const loginEl = box.querySelector("#mpCurrentLogin");
+  try {
+    const p = await api("/api/me/profile");
+    loginEl.textContent = p.login || p.teacher_id;
+  } catch (err) {
+    loginEl.textContent = "—";
+  }
+
+  box.querySelector("#mpSaveBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#mpMsg");
+    const currentPw = box.querySelector("#mpCurrentPw").value;
+    const newLogin = box.querySelector("#mpNewLogin").value.trim();
+    const newPw = box.querySelector("#mpNewPw").value;
+    const newPw2 = box.querySelector("#mpNewPw2").value;
+
+    if (!currentPw) {
+      msg.innerHTML = `<span class="badge warn">❌ Joriy parolni kiriting</span>`;
+      return;
+    }
+    if (!newLogin && !newPw) {
+      msg.innerHTML = `<span class="badge warn">❌ Yangi login yoki yangi parolni kiriting</span>`;
+      return;
+    }
+    if (newPw && newPw !== newPw2) {
+      msg.innerHTML = `<span class="badge warn">❌ Yangi parollar mos kelmadi</span>`;
+      return;
+    }
+
+    msg.textContent = "Saqlanmoqda...";
+    try {
+      const res = await api("/api/me/credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          current_password: currentPw,
+          login: newLogin || null,
+          new_password: newPw || null,
+        }),
+      });
+      loginEl.textContent = res.login;
+      box.querySelectorAll("#mpCurrentPw, #mpNewLogin, #mpNewPw, #mpNewPw2").forEach((i) => { i.value = ""; });
+      msg.innerHTML = `<span class="badge ok">✅ Saqlandi. Keyingi safar yangi ma'lumotlar bilan kiring.</span>`;
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
 }
 
 // ============================================================
@@ -4118,7 +4222,7 @@ async function renderEmployeesList(box, me) {
 
   const rows = employees.map((e) => `
     <tr>
-      <td>${e.full_name}<br/><span style="color:var(--hint);font-size:11px;">${e.teacher_id}</span></td>
+      <td>${e.full_name}<br/><span style="color:var(--hint);font-size:11px;">${e.login || e.teacher_id}</span></td>
       <td>${e.role}</td>
       <td>${e.grade || "-"}</td>
       <td>${e.workload_rate}</td>
@@ -4467,13 +4571,23 @@ function renderEmployeeEditForm(box, me, emp) {
       <div class="card" id="ed_gradeHistoryCard"><div class="center-box"><div class="spinner"></div></div></div>
     ` : ""}
 
-    <h2>Parol</h2>
+    <h2>Kirish ma'lumotlari</h2>
     <div class="card">
       <p style="font-size:13px;color:var(--hint);margin-top:0;">
-        Xodim tizimga o'zining login'i (<b>${emp.teacher_id}</b>) va parol bilan kiradi.
-        Agar parolni unutgan bo'lsa yoki almashtirish kerak bo'lsa, shu yerdan yangi parol o'rnating.
+        Xodim tizimga shu login va parol bilan kiradi. Parol maydonini bo'sh qoldirsangiz,
+        eski parol o'zgarmaydi.
       </p>
-      <button class="secondary" id="ed_resetPw">🔑 Parolni tiklash</button>
+
+      <label>Login</label>
+      <input id="ed_login" type="text" value="${emp.login || emp.teacher_id}" autocomplete="off" />
+
+      <label>Yangi parol</label>
+      <input id="ed_newPw" type="text" placeholder="Bo'sh qoldirsangiz, o'zgarmaydi" autocomplete="off" />
+
+      <button class="primary" id="ed_saveCreds">Kirish ma'lumotlarini saqlash</button>
+      <div id="ed_credsMsg" style="margin:8px 0 12px;font-size:13px;"></div>
+
+      <button class="secondary" id="ed_resetPw">🎲 Tasodifiy parol yaratish</button>
     </div>
   `;
 
@@ -4519,9 +4633,33 @@ function renderEmployeeEditForm(box, me, emp) {
     }
   });
 
+  box.querySelector("#ed_saveCreds").addEventListener("click", async () => {
+    const msg = box.querySelector("#ed_credsMsg");
+    const newLogin = box.querySelector("#ed_login").value.trim();
+    const newPw = box.querySelector("#ed_newPw").value.trim();
+
+    if (!newLogin) {
+      msg.innerHTML = `<span class="badge warn">❌ Login bo'sh bo'lishi mumkin emas</span>`;
+      return;
+    }
+
+    msg.textContent = "Saqlanmoqda...";
+    try {
+      await api(`/api/employees/${emp.teacher_id}/credentials`, {
+        method: "POST",
+        body: JSON.stringify({ login: newLogin, password: newPw || null }),
+      });
+      emp.login = newLogin;
+      box.querySelector("#ed_newPw").value = "";
+      msg.innerHTML = `<span class="badge ok">✅ Saqlandi</span>`;
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+
   box.querySelector("#ed_resetPw").addEventListener("click", () => {
     showConfirm(
-      "Parolni tiklash",
+      "Tasodifiy parol yaratish",
       `<b>${emp.full_name}</b> uchun yangi tasodifiy parol yaratiladi. Eski parol shu zahoti ishlamay qoladi. Davom etasizmi?`,
       async () => {
         try {

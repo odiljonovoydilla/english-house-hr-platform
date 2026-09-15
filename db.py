@@ -84,6 +84,12 @@ def init_db():
     _add_column_if_missing("employees", "phone", "TEXT")
     _add_column_if_missing("employees", "fixed_salary", "REAL")
     _add_column_if_missing("employees", "password_hash", "TEXT")
+    # Login — tizimga kirish nomi. teacher_id dan ALOHIDA saqlanadi, chunki teacher_id
+    # barcha jadvallarda (scorecard, bonus, topshiriq va h.k.) bog'lovchi kalit sifatida
+    # ishlatiladi va o'zgarmasligi kerak; login esa xodim xohlagancha almashtirishi mumkin.
+    _add_column_if_missing("employees", "login", "TEXT")
+    cur.execute("UPDATE employees SET login=teacher_id WHERE login IS NULL OR login=''")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_login ON employees(LOWER(login))")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS scorecards (
@@ -543,9 +549,9 @@ def init_db():
         ).fetchone()
         if not existing:
             cur.execute("""
-                INSERT INTO employees (teacher_id, full_name, role, password_hash, active, created_at)
-                VALUES (?, ?, 'CEO', ?, 1, ?)
-            """, (admin_teacher_id, admin_name, hash_password(admin_password), now_iso()))
+                INSERT INTO employees (teacher_id, full_name, role, password_hash, login, active, created_at)
+                VALUES (?, ?, 'CEO', ?, ?, 1, ?)
+            """, (admin_teacher_id, admin_name, hash_password(admin_password), admin_teacher_id, now_iso()))
             _conn.commit()
 
 
@@ -600,6 +606,27 @@ def get_employee(teacher_id: str):
     ).fetchone()
 
 
+def get_employee_by_login(login: str):
+    """Login bo'yicha qidiradi — katta/kichik harf farq qilmaydi."""
+    return _conn.execute(
+        "SELECT * FROM employees WHERE LOWER(login)=LOWER(?)", ((login or "").strip(),)
+    ).fetchone()
+
+
+def is_login_taken(login: str, except_teacher_id: str = None) -> bool:
+    row = _conn.execute(
+        "SELECT teacher_id FROM employees WHERE LOWER(login)=LOWER(?)", ((login or "").strip(),)
+    ).fetchone()
+    if not row:
+        return False
+    return row["teacher_id"] != except_teacher_id
+
+
+def set_login(teacher_id: str, login: str):
+    _conn.execute("UPDATE employees SET login=? WHERE teacher_id=?", ((login or "").strip(), teacher_id))
+    _conn.commit()
+
+
 def list_employees(role: str = None):
     if role:
         return _conn.execute(
@@ -611,14 +638,14 @@ def list_employees(role: str = None):
 
 
 def add_employee(teacher_id, full_name, role, grade, workload_rate, phone=None, fixed_salary=None,
-                  subject=None, revenue_percent=None, password_hash=None):
+                  subject=None, revenue_percent=None, password_hash=None, login=None):
     now = now_iso()
     _conn.execute("""
         INSERT INTO employees (teacher_id, full_name, role, grade, workload_rate, phone, fixed_salary,
-                                subject, revenue_percent, password_hash, active, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                                subject, revenue_percent, password_hash, login, active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
     """, (teacher_id, full_name, role, grade, workload_rate, phone, fixed_salary,
-          subject, revenue_percent, password_hash, now))
+          subject, revenue_percent, password_hash, (login or teacher_id), now))
     _conn.commit()
 
     # Grade/Stavka tarixini shu kundan boshlab yozib qo'yamiz (Teacher uchun muhim)

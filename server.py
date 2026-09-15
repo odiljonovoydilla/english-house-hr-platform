@@ -165,7 +165,7 @@ def login_page():
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            teacher_id: document.getElementById("loginId").value.trim(),
+            login: document.getElementById("loginId").value.trim(),
             password: document.getElementById("loginPw").value,
           }),
         });
@@ -187,12 +187,13 @@ def login_page():
 @app.post("/api/login")
 async def api_login(request: Request):
     body = await request.json()
-    teacher_id = (body.get("teacher_id") or "").strip()
+    login = (body.get("login") or body.get("teacher_id") or "").strip()
     password = body.get("password") or ""
-    if not teacher_id or not password:
+    if not login or not password:
         raise HTTPException(status_code=400, detail="Login va parol kiritilishi shart")
 
-    emp = db.get_employee(teacher_id)
+    # Avval login bo'yicha, topilmasa teacher_id bo'yicha (eski yozuvlar uchun)
+    emp = db.get_employee_by_login(login) or db.get_employee(login)
     if not emp or not emp["active"] or not verify_password(password, emp["password_hash"]):
         raise HTTPException(status_code=401, detail="Login yoki parol noto'g'ri")
 
@@ -421,6 +422,7 @@ def api_auth(x_telegram_init_data: str = Header(None)):
     emp = get_current_employee(x_telegram_init_data)
     return {
         "teacher_id": emp["teacher_id"],
+        "login": emp["login"],
         "full_name": emp["full_name"],
         "role": emp["role"],
         "grade": emp["grade"],
@@ -867,6 +869,7 @@ def api_my_profile(x_telegram_init_data: str = Header(None)):
         fix = emp["fixed_salary"] or 0
     return {
         "teacher_id": emp["teacher_id"],
+        "login": emp["login"],
         "full_name": emp["full_name"],
         "role": emp["role"],
         "grade": emp["grade"],
@@ -875,6 +878,47 @@ def api_my_profile(x_telegram_init_data: str = Header(None)):
         "subject": emp["subject"],
         "revenue_percent": emp["revenue_percent"],
     }
+
+
+@app.post("/api/me/credentials")
+async def api_update_my_credentials(request: Request, x_telegram_init_data: str = Header(None)):
+    """
+    Xodim o'zining login va/yoki parolini o'zgartiradi.
+    Xavfsizlik uchun joriy parol majburiy tasdiqlanadi.
+    """
+    real_teacher_id = _get_real_teacher_id()
+    if db.get_impersonation(real_teacher_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Sinov rejimida kirish ma'lumotlarini o'zgartirib bo'lmaydi — avval asl hisobingizga qayting",
+        )
+
+    emp = db.get_employee(real_teacher_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Xodim topilmadi")
+
+    body = await request.json()
+    current_password = body.get("current_password") or ""
+    new_login = (body.get("login") or "").strip()
+    new_password = (body.get("new_password") or "").strip()
+
+    if not verify_password(current_password, emp["password_hash"]):
+        raise HTTPException(status_code=401, detail="Joriy parol noto'g'ri")
+
+    if not new_login and not new_password:
+        raise HTTPException(status_code=400, detail="Yangi login yoki yangi parolni kiriting")
+
+    if new_login and new_login.lower() != (emp["login"] or "").lower():
+        if db.is_login_taken(new_login, except_teacher_id=real_teacher_id):
+            raise HTTPException(status_code=400, detail="Bu login band — boshqasini tanlang")
+        db.set_login(real_teacher_id, new_login)
+
+    if new_password:
+        if len(new_password) < 4:
+            raise HTTPException(status_code=400, detail="Yangi parol kamida 4 belgidan iborat bo'lishi kerak")
+        db.set_password(real_teacher_id, hash_password(new_password))
+
+    return {"ok": True, "login": new_login or emp["login"]}
 
 
 # =========================================================
@@ -916,7 +960,9 @@ async def api_add_employee(request: Request, x_telegram_init_data: str = Header(
             raise HTTPException(status_code=400, detail=f"'{f}' maydoni to'ldirilishi shart")
 
     if db.get_employee(body["teacher_id"]):
-        raise HTTPException(status_code=400, detail="Bu Teacher ID allaqachon mavjud")
+        raise HTTPException(status_code=400, detail="Bu login allaqachon mavjud")
+    if db.is_login_taken(body["teacher_id"]):
+        raise HTTPException(status_code=400, detail="Bu login band — boshqasini tanlang")
 
     password = body.get("password") or secrets.token_urlsafe(6)
 
@@ -951,6 +997,39 @@ async def api_set_employee_password(teacher_id: str, request: Request, x_telegra
 
     db.set_password(teacher_id, hash_password(password))
     return {"ok": True, "password": password}
+
+
+@app.post("/api/employees/{teacher_id}/credentials")
+async def api_set_employee_credentials(teacher_id: str, request: Request, x_telegram_init_data: str = Header(None)):
+    """
+    Admin xodimning kirish ma'lumotlarini qo'lda o'zgartiradi: login va/yoki parol.
+    Ikkalasi ham ixtiyoriy — bo'sh qoldirilgani o'zgarmaydi.
+    """
+    emp = get_current_employee(x_telegram_init_data)
+    require_admin(emp)
+
+    target = db.get_employee(teacher_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Xodim topilmadi")
+
+    body = await request.json()
+    new_login = (body.get("login") or "").strip()
+    new_password = (body.get("password") or "").strip()
+
+    if not new_login and not new_password:
+        raise HTTPException(status_code=400, detail="Login yoki parolni kiriting")
+
+    if new_login and new_login.lower() != (target["login"] or "").lower():
+        if db.is_login_taken(new_login, except_teacher_id=teacher_id):
+            raise HTTPException(status_code=400, detail="Bu login band — boshqasini tanlang")
+        db.set_login(teacher_id, new_login)
+
+    if new_password:
+        if len(new_password) < 4:
+            raise HTTPException(status_code=400, detail="Parol kamida 4 belgidan iborat bo'lishi kerak")
+        db.set_password(teacher_id, hash_password(new_password))
+
+    return {"ok": True, "login": new_login or target["login"]}
 
 
 @app.patch("/api/employees/{teacher_id}")

@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import hashlib
 import hmac
+import threading
 from datetime import datetime
 
 from payroll_engine import (
@@ -21,8 +22,51 @@ db_dir = os.path.dirname(DB_PATH)
 if db_dir:
     os.makedirs(db_dir, exist_ok=True)
 
-_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-_conn.row_factory = sqlite3.Row
+class _ThreadLocalConnection:
+    """
+    Har bir thread uchun ALOHIDA SQLite ulanishi.
+
+    Nega kerak: FastAPI sinxron endpoint'larni threadpool'da bajaradi, ya'ni bir vaqtning
+    o'zida bir nechta so'rov turli thread'larda ishlaydi. Bitta sqlite3.Connection'ni
+    thread'lar orasida ulashish "sqlite3.InterfaceError: bad parameter or other API misuse"
+    xatosiga (500) olib keladi. Har bir thread o'z ulanishini olsa, bu muammo yo'qoladi.
+
+    WAL rejimi o'qish va yozishni parallel bajarishga imkon beradi; busy_timeout esa
+    bir vaqtda yozish urinishlarida darhol xato bermay, navbat kutishini ta'minlaydi.
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._local = threading.local()
+
+    @property
+    def _c(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self._path, check_same_thread=False, timeout=30)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            self._local.conn = conn
+        return conn
+
+    def execute(self, *args, **kwargs):
+        return self._c.execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        return self._c.executemany(*args, **kwargs)
+
+    def cursor(self):
+        return self._c.cursor()
+
+    def commit(self):
+        return self._c.commit()
+
+    def rollback(self):
+        return self._c.rollback()
+
+
+_conn = _ThreadLocalConnection(DB_PATH)
 
 
 def now_iso():
@@ -1708,6 +1752,29 @@ def list_tasks_in_range(start: str, end: str):
         "SELECT * FROM tasks WHERE date(created_at) BETWEEN ? AND ? ORDER BY created_at DESC",
         (start, end),
     ).fetchall()
+
+
+def count_unseen_inbox_tasks(teacher_id: str, role: str) -> int:
+    """Xodimga (yoki uning roliga) kelgan, hali bir marta ham ochilmagan topshiriqlar soni."""
+    row = _conn.execute("""
+        SELECT COUNT(*) AS c FROM tasks
+        WHERE (to_teacher_id=? OR (to_teacher_id IS NULL AND to_role=?))
+          AND seen_at IS NULL
+          AND status != 'done'
+    """, (teacher_id, role)).fetchone()
+    return row["c"] if row else 0
+
+
+def mark_inbox_tasks_seen(teacher_id: str, role: str) -> int:
+    """Xodim topshiriqlar ro'yxatini ochganda — barcha yangi topshiriqlarni 'ko'rilgan' deb belgilaydi."""
+    cur = _conn.cursor()
+    cur.execute("""
+        UPDATE tasks SET seen_at=?, seen_by=?
+        WHERE (to_teacher_id=? OR (to_teacher_id IS NULL AND to_role=?))
+          AND seen_at IS NULL
+    """, (now_iso(), teacher_id, teacher_id, role))
+    _conn.commit()
+    return cur.rowcount
 
 
 def mark_task_first_viewed(task_id: int, by_teacher_id: str):

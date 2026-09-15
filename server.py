@@ -2808,6 +2808,8 @@ def _task_to_dict(row, category_labels=None, role_penalties=None):
     d["is_overdue"] = bool(
         d["deadline"] and d["status"] != "done" and d["deadline"] < _todaystr_for_tasks()
     )
+    # Hali bir marta ham ochilmagan (qabul qiluvchi ko'rmagan) topshiriq
+    d["is_unread"] = d["seen_at"] is None and d["status"] != "done"
 
     penalties = role_penalties if role_penalties is not None else db.get_task_role_penalties()
     penalty_rate = penalties.get(d["to_role_actual"], 0) if d["to_role_actual"] else 0
@@ -2877,16 +2879,23 @@ async def api_create_task(
 def api_tasks_inbox(x_telegram_init_data: str = Header(None)):
     emp = get_current_employee(x_telegram_init_data)
     rows = db.list_tasks_inbox(emp["teacher_id"], emp["role"])
-
-    # Faqat "birinchi ko'rilgan vaqt"ni jim belgilaymiz (analitika uchun) — status esa
-    # FAQAT xodim aniq "🔄 Jarayonda" tugmasini bosganda o'zgaradi, avtomatik emas.
-    for r in rows:
-        db.mark_task_first_viewed(r["id"], emp["teacher_id"])
-
-    rows = db.list_tasks_inbox(emp["teacher_id"], emp["role"])
     cat_labels = _task_category_labels_map()
     penalties = db.get_task_role_penalties()
-    return [_task_to_dict(r, cat_labels, penalties) for r in rows]
+
+    # Ro'yxatni ochilmagan holati bilan BIRGA qaytaramiz, so'ng "ko'rilgan" deb belgilaymiz:
+    # shunda xodim shu ochilishda qaysi topshiriqlar yangi ekanini ("O'qilmagan") ko'radi,
+    # qo'ng'iroqcha hisoblagichi esa shundan keyin tozalanadi.
+    # MUHIM: status o'zgarmaydi — u FAQAT xodim "🔄 Jarayonda" tugmasini bosganda o'zgaradi.
+    out = [_task_to_dict(r, cat_labels, penalties) for r in rows]
+    db.mark_inbox_tasks_seen(emp["teacher_id"], emp["role"])
+    return out
+
+
+@app.get("/api/tasks/unread-count")
+def api_tasks_unread_count(x_telegram_init_data: str = Header(None)):
+    """Qo'ng'iroqcha uchun — hali ochilmagan topshiriqlar soni."""
+    emp = get_current_employee(x_telegram_init_data)
+    return {"count": db.count_unseen_inbox_tasks(emp["teacher_id"], emp["role"])}
 
 
 @app.get("/api/tasks/sent")

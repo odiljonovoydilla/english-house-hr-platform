@@ -278,6 +278,10 @@ function showPasswordModal(password, name) {
 // har bir rolning o'z ro'yxatiga alohida yozilmaydi.
 const MY_PROFILE_NAV_ITEM = { id: "myprofile", icon: "⚙️", label: "Profilim" };
 
+// Topshiriqlar ro'yxati ochilganda qo'ng'iroqcha hisoblagichini yangilash uchun
+let _refreshUnreadBell = () => {};
+let _unreadBellTimer = null;
+
 function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradient, heroLabel }) {
   document.body.classList.add("shell-active");
   appEl.classList.add("shell-mode");
@@ -292,11 +296,6 @@ function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradi
   const theme = getTheme();
   const shell = el(`
     <div class="app-shell">
-      <div class="mobile-topbar">
-        <button class="icon-btn" id="sidebarOpenBtn" title="Menyu">☰</button>
-        <span class="mobile-topbar-brand">🏫 English House</span>
-        <span style="width:34px;"></span>
-      </div>
       <div class="sidebar-overlay" id="sidebarOverlay"></div>
       <aside class="sidebar" id="appSidebar">
         <div class="sidebar-brand">
@@ -329,9 +328,19 @@ function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradi
           </button>
         </div>
       </aside>
-      <main class="app-main">
-        <div class="app-main-inner" id="shellContent"></div>
-      </main>
+      <div class="app-content">
+        <header class="app-topbar">
+          <button class="icon-btn" id="sidebarOpenBtn" title="Menyu">☰</button>
+          <span class="app-topbar-brand">🏫 English House</span>
+          <span class="app-topbar-spacer"></span>
+          <button class="notif-bell" id="notifBell" title="Topshiriqlar">
+            🔔<span class="notif-badge" id="notifBadge"></span>
+          </button>
+        </header>
+        <main class="app-main">
+          <div class="app-main-inner" id="shellContent"></div>
+        </main>
+      </div>
     </div>
   `);
   appEl.appendChild(shell);
@@ -365,6 +374,33 @@ function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradi
     try { await api("/api/logout", { method: "POST" }); } catch (e) { /* baribir chiqamiz */ }
     window.location.href = "/";
   });
+
+  // ---- Qo'ng'iroqcha: ochilmagan topshiriqlar ----
+  const bell = shell.querySelector("#notifBell");
+  const badge = shell.querySelector("#notifBadge");
+
+  async function refreshUnreadBell() {
+    try {
+      const res = await api("/api/tasks/unread-count");
+      const n = res.count || 0;
+      badge.textContent = n > 99 ? "99+" : String(n);
+      bell.classList.toggle("has-unread", n > 0);
+      bell.title = n > 0 ? `${n} ta o'qilmagan topshiriq` : "Topshiriqlar";
+    } catch (e) {
+      // hisoblagichni olib bo'lmasa ham ilova ishlayversin
+    }
+  }
+
+  bell.addEventListener("click", () => {
+    const tasksBtn = shell.querySelector('[data-tab="tasks"]');
+    if (tasksBtn) tasksBtn.click();
+  });
+
+  // Topshiriqlar ro'yxati ochilganda hisoblagich darhol tozalansin
+  _refreshUnreadBell = refreshUnreadBell;
+  if (_unreadBellTimer) clearInterval(_unreadBellTimer);
+  _unreadBellTimer = setInterval(refreshUnreadBell, 60000);
+  refreshUnreadBell();
 
   dispatchTab(activeId, contentBox, me);
 }
@@ -1537,6 +1573,47 @@ const TASK_STATUS_LABELS = {
   done: { label: "✅ Bajarildi", cls: "task-status-done" },
 };
 
+// "YYYY-MM-DD HH:MM:SS" -> "DD.MM.YYYY HH:MM".
+// Qo'lda ajratamiz, chunki bu format (probelli, vaqt zonasiz) ba'zi brauzerlarda
+// new Date() orqali noto'g'ri yoki umuman o'qilmaydi.
+function _formatTaskCreatedAt(iso) {
+  if (!iso) return "";
+  const [datePart, timePart] = String(iso).split(" ");
+  const parts = (datePart || "").split("-");
+  if (parts.length !== 3) return iso;
+  const [y, m, d] = parts;
+  const hhmm = (timePart || "").slice(0, 5);
+  return `${d}.${m}.${y}${hhmm ? " " + hhmm : ""}`;
+}
+
+// Muddatgacha qancha vaqt qolgani. Muddat kun aniqligida saqlanadi,
+// shuning uchun o'sha kunning oxiri (23:59) chegara deb olinadi.
+function _taskTimeLeftHtml(t) {
+  if (!t.deadline || t.status === "done") return "";
+
+  const end = new Date(`${t.deadline}T23:59:59`);
+  if (isNaN(end)) return "";
+  const diffMs = end - new Date();
+
+  if (diffMs <= 0) {
+    const lateDays = Math.max(1, Math.ceil(Math.abs(diffMs) / 86400000));
+    return `<span class="task-time-chip task-time-overdue">⏰ ${lateDays} kun kechikdi</span>`;
+  }
+
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  let label;
+  if (days > 0) label = `${days} kun ${hours} soat`;
+  else if (hours > 0) label = `${hours} soat ${minutes} daqiqa`;
+  else label = `${minutes} daqiqa`;
+
+  const soonCls = diffMs < 86400000 ? " task-time-soon" : "";
+  return `<span class="task-time-chip${soonCls}">⏳ ${label} qoldi</span>`;
+}
+
 function _formatTaskTime(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -1670,7 +1747,7 @@ async function renderTasksTab(box, me) {
       const isRecipient = t.to_teacher_id === me.teacher_id || (!t.to_teacher_id && t.to_role === me.role);
       const canStart = isRecipient && t.status === "new" && currentSubtab !== "sent";
       const canMarkDone = isRecipient && t.status !== "done" && currentSubtab !== "sent";
-      const dateLabel = t.created_at ? t.created_at.slice(0, 10) : "";
+      const createdLabel = _formatTaskCreatedAt(t.created_at);
       const studentInfoHtml = t.student_name ? `
         <div class="task-student-info">
           🎓 <b>${t.student_name}</b>${t.student_group ? ` · ${t.student_group} guruhi` : ""}${t.student_phone ? ` · ${t.student_phone}` : ""}
@@ -1693,9 +1770,10 @@ async function renderTasksTab(box, me) {
         <div class="task-card-v2 ${t.urgent ? "task-urgent" : ""} ${t.is_overdue ? "task-overdue-border" : ""}">
           <div class="task-card-top">
             <span class="task-status-chip ${statusInfo.cls}">${statusInfo.label}</span>
+            ${t.is_unread ? `<span class="task-unread-chip">${isRecipient ? "● O'qilmagan" : "◌ Hali ochilmagan"}</span>` : ""}
             ${t.urgent ? `<span class="task-urgent-chip">🔴 Shoshilinch</span>` : ""}
             ${speedBadge}
-            <span class="task-daily-number">№${t.daily_number ?? "-"} · ${dateLabel}</span>
+            <span class="task-daily-number">№${t.daily_number ?? "-"}</span>
           </div>
 
           <div class="task-card-parties">
@@ -1709,7 +1787,9 @@ async function renderTasksTab(box, me) {
 
           <div class="task-card-bottom-chips">
             ${t.category_label ? `<span class="task-category-chip">${t.category_label}</span>` : ""}
-            ${t.deadline ? `<span class="task-deadline-chip ${t.is_overdue ? "task-deadline-overdue" : ""}">📅 ${t.deadline}${t.is_overdue ? " · muddati o'tgan" : ""}</span>` : ""}
+            <span class="task-created-chip">🕒 Yaratilgan: ${createdLabel}</span>
+            ${t.deadline ? `<span class="task-deadline-chip ${t.is_overdue ? "task-deadline-overdue" : ""}">📅 Muddat: ${t.deadline}</span>` : ""}
+            ${_taskTimeLeftHtml(t)}
           </div>
           ${penaltyHtml}
 
@@ -1767,6 +1847,9 @@ async function renderTasksTab(box, me) {
       const tasks = await api(endpoint);
       renderFilterUI(tasks);
       renderList(tasks);
+      // Inbox ochilganda server topshiriqlarni "ko'rilgan" deb belgilaydi —
+      // qo'ng'iroqcha hisoblagichi ham shu zahoti yangilansin.
+      if (currentSubtab === "inbox") _refreshUnreadBell();
     } catch (err) {
       listWrap.innerHTML = `<div class="error-box">${err.message}</div>`;
     }

@@ -1872,6 +1872,7 @@ def import_legacy_data(payload: dict) -> dict:
             fixed_salary=e.get("fixed_salary"), subject=e.get("subject"),
             revenue_percent=e.get("revenue_percent"),
             password_hash=pw_hashes.get(tid),
+            login=e.get("login"),
         )
         counts["employees_created"] += 1
 

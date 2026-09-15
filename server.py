@@ -2891,11 +2891,97 @@ def api_tasks_inbox(x_telegram_init_data: str = Header(None)):
     return out
 
 
-@app.get("/api/tasks/unread-count")
-def api_tasks_unread_count(x_telegram_init_data: str = Header(None)):
-    """Qo'ng'iroqcha uchun — hali ochilmagan topshiriqlar soni."""
+# =========================================================
+# API — BILDIRISHNOMALAR (qo'ng'iroqcha): yangi topshiriq va yangi izoh
+# =========================================================
+
+def _notif_unread_count(emp) -> int:
+    return (
+        db.count_unseen_inbox_tasks(emp["teacher_id"], emp["role"])
+        + db.count_unread_comments(emp["teacher_id"], emp["role"])
+    )
+
+
+@app.get("/api/notifications/unread-count")
+def api_notifications_unread_count(x_telegram_init_data: str = Header(None)):
+    """Qo'ng'iroqcha raqami — o'qilmagan topshiriq va izohlar yig'indisi."""
     emp = get_current_employee(x_telegram_init_data)
-    return {"count": db.count_unseen_inbox_tasks(emp["teacher_id"], emp["role"])}
+    return {"count": _notif_unread_count(emp)}
+
+
+@app.get("/api/notifications")
+def api_notifications(limit: int = 25, x_telegram_init_data: str = Header(None)):
+    """
+    Qo'ng'iroqcha ro'yxati — yangi topshiriqlar va topshiriqlarga yozilgan izohlar
+    bitta ro'yxatda, eng yangisi birinchi.
+    """
+    emp = get_current_employee(x_telegram_init_data)
+    me = emp["teacher_id"]
+    items = []
+
+    for t in db.list_task_notifications(me, emp["role"], limit):
+        author = db.get_employee(t["from_teacher_id"])
+        items.append({
+            "type": "task",
+            "id": f"task-{t['id']}",
+            "task_id": t["id"],
+            "task_number": t["daily_number"],
+            "from_full_name": author["full_name"] if author else t["from_teacher_id"],
+            "preview": (t["text"] or "")[:120],
+            "created_at": t["created_at"],
+            "is_unread": t["seen_at"] is None and t["status"] != "done",
+            "subtab": "inbox",
+            "urgent": bool(t["urgent"]),
+        })
+
+    for c in db.list_comment_notifications(me, emp["role"], limit):
+        author = db.get_employee(c["from_teacher_id"])
+        # Men qabul qiluvchimi yoki yuboruvchimi — kartochkani qaysi ro'yxatdan qidirishni bildiradi
+        is_recipient = c["to_teacher_id"] == me or (c["to_teacher_id"] is None and c["task_from"] != me)
+        items.append({
+            "type": "comment",
+            "id": f"comment-{c['comment_id']}",
+            "comment_id": c["comment_id"],
+            "task_id": c["task_id"],
+            "task_number": c["daily_number"],
+            "from_full_name": author["full_name"] if author else c["from_teacher_id"],
+            "preview": (c["text"] or "")[:120],
+            "created_at": c["created_at"],
+            "is_unread": c["read_count"] == 0,
+            "subtab": "inbox" if is_recipient else "sent",
+        })
+
+    items.sort(key=lambda x: x["created_at"] or "", reverse=True)
+
+    return {
+        "unread_count": _notif_unread_count(emp),
+        "items": items[:limit],
+    }
+
+
+@app.post("/api/notifications/read")
+async def api_notifications_mark_one_read(request: Request, x_telegram_init_data: str = Header(None)):
+    """Bitta bildirishnomani o'qilgan deb belgilaydi."""
+    emp = get_current_employee(x_telegram_init_data)
+    body = await request.json()
+    kind = body.get("type")
+
+    if kind == "task":
+        db.mark_task_first_viewed(int(body["task_id"]), emp["teacher_id"])
+    elif kind == "comment":
+        db.mark_comment_read(emp["teacher_id"], int(body["comment_id"]))
+    else:
+        raise HTTPException(status_code=400, detail="Noma'lum bildirishnoma turi")
+
+    return {"ok": True, "unread_count": _notif_unread_count(emp)}
+
+
+@app.post("/api/notifications/read-all")
+def api_notifications_mark_all_read(x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    db.mark_inbox_tasks_seen(emp["teacher_id"], emp["role"])
+    db.mark_all_comments_read(emp["teacher_id"], emp["role"])
+    return {"ok": True, "unread_count": 0}
 
 
 @app.get("/api/tasks/sent")
@@ -2985,6 +3071,9 @@ def api_task_comments_list(task_id: int, x_telegram_init_data: str = Header(None
         author = db.get_employee(d["from_teacher_id"])
         d["from_full_name"] = author["full_name"] if author else d["from_teacher_id"]
         out.append(d)
+
+    # Izohlar ochildi — shu topshiriqning izohlari endi o'qilgan hisoblanadi
+    db.mark_task_comments_read(emp["teacher_id"], task_id)
     return out
 
 

@@ -1172,6 +1172,93 @@ body.shell-active { padding-bottom: 0; }
   .notif-bell.has-unread { animation: none; }
 }
 
+/* ---------- Bildirishnomalar ro'yxati (qo'ng'iroqcha ostidagi panel) ---------- */
+.notif-wrap { position: relative; }
+.notif-panel[hidden] { display: none; }
+.notif-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 380px;
+  max-width: calc(100vw - 28px);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: 60;
+  overflow: hidden;
+}
+.notif-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--divider);
+  font-size: 13.5px;
+  font-weight: 800;
+}
+.notif-mark-all {
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  text-align: right;
+}
+.notif-mark-all:hover { text-decoration: underline; }
+.notif-list { overflow-y: auto; }
+.notif-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: none;
+  border-bottom: 1px solid var(--divider);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s var(--ease);
+}
+.notif-item:last-child { border-bottom: none; }
+.notif-item:hover { background: var(--surface-2); }
+.notif-item-unread { background: var(--tint); }
+.notif-item-unread:hover { background: var(--tint-strong); }
+.notif-item-icon { font-size: 16px; flex-shrink: 0; line-height: 1.4; }
+.notif-item-body { flex: 1; min-width: 0; }
+.notif-item-title {
+  display: block;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.45;
+}
+.notif-item-preview {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.notif-item-time { display: block; font-size: 10.5px; color: var(--text-muted); margin-top: 4px; }
+.notif-empty { padding: 26px 14px; text-align: center; font-size: 13px; color: var(--text-muted); }
+
+/* Bildirishnomadan ochilgan kartochka — qisqa vaqt ajratib ko'rsatiladi */
+.task-card-focused {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  transition: outline-color 0.4s var(--ease);
+}
+
 .sidebar-overlay {
   display: none;
   position: fixed; inset: 0;

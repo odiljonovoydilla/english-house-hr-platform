@@ -282,6 +282,10 @@ const MY_PROFILE_NAV_ITEM = { id: "myprofile", icon: "⚙️", label: "Profilim"
 let _refreshUnreadBell = () => {};
 let _unreadBellTimer = null;
 
+// Bildirishnomadan kelinganda ochilishi kerak bo'lgan topshiriq:
+// {taskId, subtab} — Topshiriqlar bo'limi yuklangach shu kartochkaga o'tadi.
+let _pendingTaskFocus = null;
+
 function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradient, heroLabel }) {
   document.body.classList.add("shell-active");
   appEl.classList.add("shell-mode");
@@ -333,9 +337,18 @@ function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradi
           <button class="icon-btn" id="sidebarOpenBtn" title="Menyu">☰</button>
           <span class="app-topbar-brand">🏫 English House</span>
           <span class="app-topbar-spacer"></span>
-          <button class="notif-bell" id="notifBell" title="Topshiriqlar">
-            🔔<span class="notif-badge" id="notifBadge"></span>
-          </button>
+          <div class="notif-wrap">
+            <button class="notif-bell" id="notifBell" title="Bildirishnomalar">
+              🔔<span class="notif-badge" id="notifBadge"></span>
+            </button>
+            <div class="notif-panel" id="notifPanel" hidden>
+              <div class="notif-panel-head">
+                <span>Bildirishnomalar</span>
+                <button class="notif-mark-all" id="notifMarkAll">Barchasini o'qilgan deb belgilash</button>
+              </div>
+              <div class="notif-list" id="notifList"></div>
+            </div>
+          </div>
         </header>
         <main class="app-main">
           <div class="app-main-inner" id="shellContent"></div>
@@ -375,25 +388,102 @@ function renderSidebarShell(me, { items, activeId, dispatch, heroIcon, heroGradi
     window.location.href = "/";
   });
 
-  // ---- Qo'ng'iroqcha: ochilmagan topshiriqlar ----
+  // ---- Qo'ng'iroqcha va bildirishnomalar ro'yxati ----
   const bell = shell.querySelector("#notifBell");
   const badge = shell.querySelector("#notifBadge");
+  const panel = shell.querySelector("#notifPanel");
+  const list = shell.querySelector("#notifList");
+
+  function setBadge(n) {
+    badge.textContent = n > 99 ? "99+" : String(n);
+    bell.classList.toggle("has-unread", n > 0);
+    bell.title = n > 0 ? `${n} ta yangi bildirishnoma` : "Bildirishnomalar";
+  }
 
   async function refreshUnreadBell() {
     try {
-      const res = await api("/api/tasks/unread-count");
-      const n = res.count || 0;
-      badge.textContent = n > 99 ? "99+" : String(n);
-      bell.classList.toggle("has-unread", n > 0);
-      bell.title = n > 0 ? `${n} ta o'qilmagan topshiriq` : "Topshiriqlar";
+      const res = await api("/api/notifications/unread-count");
+      setBadge(res.count || 0);
     } catch (e) {
       // hisoblagichni olib bo'lmasa ham ilova ishlayversin
     }
   }
 
-  bell.addEventListener("click", () => {
+  function openTaskFromNotification(item) {
+    _pendingTaskFocus = { taskId: item.task_id, subtab: item.subtab };
     const tasksBtn = shell.querySelector('[data-tab="tasks"]');
     if (tasksBtn) tasksBtn.click();
+  }
+
+  async function loadNotifications() {
+    list.innerHTML = `<div class="center-box" style="min-height:90px;"><div class="spinner"></div></div>`;
+    try {
+      const res = await api("/api/notifications");
+      setBadge(res.unread_count || 0);
+
+      if (!res.items.length) {
+        list.innerHTML = `<div class="notif-empty">Hozircha bildirishnoma yo'q</div>`;
+        return;
+      }
+
+      list.innerHTML = res.items.map((it) => {
+        const who = it.from_full_name;
+        const num = it.task_number ? `№${it.task_number}` : `topshiriq`;
+        const title = it.type === "comment"
+          ? `<b>${who}</b> sizning ${num} topshirig'ingizga izoh yozdi`
+          : `<b>${who}</b> sizga yangi topshiriq berdi (${num})`;
+        return `
+          <button class="notif-item${it.is_unread ? " notif-item-unread" : ""}" data-notif="${it.id}">
+            <span class="notif-item-icon">${it.type === "comment" ? "💬" : it.urgent ? "🔴" : "📋"}</span>
+            <span class="notif-item-body">
+              <span class="notif-item-title">${title}</span>
+              <span class="notif-item-preview">${it.preview || ""}</span>
+              <span class="notif-item-time">${_formatTaskCreatedAt(it.created_at)}</span>
+            </span>
+          </button>
+        `;
+      }).join("");
+
+      list.querySelectorAll("[data-notif]").forEach((btn) => {
+        const item = res.items.find((x) => x.id === btn.dataset.notif);
+        btn.addEventListener("click", async () => {
+          panel.hidden = true;
+          try {
+            const r = await api("/api/notifications/read", {
+              method: "POST",
+              body: JSON.stringify(
+                item.type === "comment"
+                  ? { type: "comment", comment_id: item.comment_id }
+                  : { type: "task", task_id: item.task_id }
+              ),
+            });
+            setBadge(r.unread_count || 0);
+          } catch (e) { /* belgilay olmasak ham ochaveramiz */ }
+          openTaskFromNotification(item);
+        });
+      });
+    } catch (err) {
+      list.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  bell.addEventListener("click", (e) => {
+    e.stopPropagation();
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) loadNotifications();
+  });
+
+  panel.addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => { panel.hidden = true; });
+
+  shell.querySelector("#notifMarkAll").addEventListener("click", async () => {
+    try {
+      await api("/api/notifications/read-all", { method: "POST" });
+      setBadge(0);
+      loadNotifications();
+    } catch (err) {
+      safeAlert("Xato: " + err.message);
+    }
   });
 
   // Topshiriqlar ro'yxati ochilganda hisoblagich darhol tozalansin
@@ -1687,6 +1777,14 @@ async function renderTasksTab(box, me) {
   loadMySummary(box.querySelector("#taskMySummaryWrap"));
 
   let currentSubtab = "inbox";
+
+  // Bildirishnomadan kelingan bo'lsa — kartochka qaysi ro'yxatda bo'lsa, o'shani ochamiz
+  if (_pendingTaskFocus && _pendingTaskFocus.subtab && _pendingTaskFocus.subtab !== "inbox") {
+    currentSubtab = _pendingTaskFocus.subtab;
+    box.querySelectorAll("#taskSubTabs .tab").forEach((tabBtn) => {
+      tabBtn.classList.toggle("active", tabBtn.dataset.subtab === currentSubtab);
+    });
+  }
   let filters = { sender: "all", status: "all" };
   const listWrap = box.querySelector("#taskListWrap");
   const formWrap = box.querySelector("#taskFormWrap");
@@ -1767,7 +1865,7 @@ async function renderTasksTab(box, me) {
         : "";
 
       return `
-        <div class="task-card-v2 ${t.urgent ? "task-urgent" : ""} ${t.is_overdue ? "task-overdue-border" : ""}">
+        <div class="task-card-v2 ${t.urgent ? "task-urgent" : ""} ${t.is_overdue ? "task-overdue-border" : ""}" id="taskCard_${t.id}">
           <div class="task-card-top">
             <span class="task-status-chip ${statusInfo.cls}">${statusInfo.label}</span>
             ${t.is_unread ? `<span class="task-unread-chip">${isRecipient ? "● O'qilmagan" : "◌ Hali ochilmagan"}</span>` : ""}
@@ -1838,6 +1936,21 @@ async function renderTasksTab(box, me) {
         }
       });
     });
+
+    // Bildirishnoma bosilib kelingan bo'lsa — o'sha kartochkani ajratib ko'rsatamiz
+    // va izohlarini darhol ochamiz.
+    if (_pendingTaskFocus) {
+      const { taskId } = _pendingTaskFocus;
+      _pendingTaskFocus = null;
+      const card = listWrap.querySelector(`#taskCard_${taskId}`);
+      if (card) {
+        card.classList.add("task-card-focused");
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+        const commentsBtn = card.querySelector(".task-comments-toggle");
+        if (commentsBtn) commentsBtn.click();
+        setTimeout(() => card.classList.remove("task-card-focused"), 3000);
+      }
+    }
   }
 
   async function loadList() {

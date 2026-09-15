@@ -551,6 +551,16 @@ def init_db():
     )
     """)
 
+    # Qaysi xodim qaysi izohni o'qigani — qo'ng'iroqchadagi bildirishnomalar uchun
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS task_comment_reads (
+        teacher_id TEXT NOT NULL,
+        comment_id INTEGER NOT NULL,
+        read_at TEXT,
+        PRIMARY KEY (teacher_id, comment_id)
+    )
+    """)
+
     # AI (Claude) tomonidan generatsiya qilingan xulosalarni keshlash — har safar qayta
     # so'rov yubormaslik uchun (xarajatni tejash)
     cur.execute("""
@@ -1818,6 +1828,82 @@ def list_task_comments(task_id: int):
     return _conn.execute(
         "SELECT * FROM task_comments WHERE task_id=? ORDER BY created_at ASC", (task_id,)
     ).fetchall()
+
+
+def list_task_notifications(teacher_id: str, role: str, limit: int = 30):
+    """Menga (yoki rolimga) kelgan so'nggi topshiriqlar — bildirishnomalar ro'yxati uchun."""
+    return _conn.execute("""
+        SELECT * FROM tasks
+        WHERE to_teacher_id=? OR (to_teacher_id IS NULL AND to_role=?)
+        ORDER BY created_at DESC
+        LIMIT ?
+    """, (teacher_id, role, limit)).fetchall()
+
+
+# ---------- Izoh bildirishnomalari (qo'ng'iroqcha uchun) ----------
+
+# "Menga tegishli" izoh: men qabul qiluvchi YOKI yuboruvchi bo'lgan topshiriqqa
+# BOSHQA birov yozgan izoh.
+_MY_COMMENTS_WHERE = """
+    FROM task_comments c
+    JOIN tasks t ON t.id = c.task_id
+    WHERE c.from_teacher_id != ?
+      AND (t.to_teacher_id = ? OR (t.to_teacher_id IS NULL AND t.to_role = ?) OR t.from_teacher_id = ?)
+"""
+
+
+def _my_comment_params(teacher_id: str, role: str):
+    return (teacher_id, teacher_id, role, teacher_id)
+
+
+def count_unread_comments(teacher_id: str, role: str) -> int:
+    row = _conn.execute(f"""
+        SELECT COUNT(*) AS c {_MY_COMMENTS_WHERE}
+          AND NOT EXISTS (
+              SELECT 1 FROM task_comment_reads r
+              WHERE r.comment_id = c.id AND r.teacher_id = ?
+          )
+    """, _my_comment_params(teacher_id, role) + (teacher_id,)).fetchone()
+    return row["c"] if row else 0
+
+
+def list_comment_notifications(teacher_id: str, role: str, limit: int = 30):
+    """Menga tegishli so'nggi izohlar — o'qilgan/o'qilmagan belgisi bilan."""
+    return _conn.execute(f"""
+        SELECT c.id AS comment_id, c.task_id, c.from_teacher_id, c.text, c.created_at,
+               t.daily_number, t.text AS task_text, t.to_teacher_id, t.from_teacher_id AS task_from,
+               (SELECT COUNT(*) FROM task_comment_reads r
+                 WHERE r.comment_id = c.id AND r.teacher_id = ?) AS read_count
+        {_MY_COMMENTS_WHERE}
+        ORDER BY c.created_at DESC
+        LIMIT ?
+    """, (teacher_id,) + _my_comment_params(teacher_id, role) + (limit,)).fetchall()
+
+
+def mark_comment_read(teacher_id: str, comment_id: int):
+    _conn.execute(
+        "INSERT OR IGNORE INTO task_comment_reads (teacher_id, comment_id, read_at) VALUES (?, ?, ?)",
+        (teacher_id, comment_id, now_iso()),
+    )
+    _conn.commit()
+
+
+def mark_task_comments_read(teacher_id: str, task_id: int):
+    """Topshiriq izohlari ochilganda — o'sha topshiriqning barcha izohlari o'qilgan bo'ladi."""
+    _conn.execute("""
+        INSERT OR IGNORE INTO task_comment_reads (teacher_id, comment_id, read_at)
+        SELECT ?, id, ? FROM task_comments WHERE task_id = ?
+    """, (teacher_id, now_iso(), task_id))
+    _conn.commit()
+
+
+def mark_all_comments_read(teacher_id: str, role: str):
+    _conn.execute(f"""
+        INSERT OR IGNORE INTO task_comment_reads (teacher_id, comment_id, read_at)
+        SELECT ?, c.id, ?
+        {_MY_COMMENTS_WHERE}
+    """, (teacher_id, now_iso()) + _my_comment_params(teacher_id, role))
+    _conn.commit()
 
 
 # ---------- AI xulosalari keshi ----------

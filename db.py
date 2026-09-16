@@ -11,7 +11,21 @@ import sqlite3
 import hashlib
 import hmac
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# Server (Railway) UTC vaqtida ishlaydi, lekin kompaniya Toshkentda joylashgan (UTC+5,
+# yozgi/qishki vaqtga o'tish yo'q). Barcha vaqt yozuvlari (created_at, seen_at va h.k.)
+# shu vaqt zonasida saqlanishi kerak — aks holda "yaratilgan vaqt" real vaqtdan 5 soat orqada
+# ko'rinadi. Doimiy UTC+5 siljish ishlatiladi (tizim/tzdata sozlamalariga bog'liq emas).
+TASHKENT_TZ = timezone(timedelta(hours=5))
+
+
+def tashkent_now() -> datetime:
+    return datetime.now(TASHKENT_TZ)
+
+
+def tashkent_today_str() -> str:
+    return tashkent_now().strftime("%Y-%m-%d")
 
 from payroll_engine import (
     DEFAULT_GRADE_RATES, DEFAULT_KPI_POOL_PERCENT, DEFAULT_AVANS_PERCENT, DEFAULT_MIN_KPI_PERCENT
@@ -70,7 +84,7 @@ _conn = _ThreadLocalConnection(DB_PATH)
 
 
 def now_iso():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return tashkent_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def hash_password(password: str) -> str:
@@ -1709,12 +1723,9 @@ def set_task_role_penalty(role: str, amount: float):
     _conn.commit()
 
 
-def create_task(from_teacher_id: str, text: str, to_teacher_id: str = None, to_role: str = None,
-                 urgent: bool = False, deadline: str = None, category: str = None,
-                 student_name: str = None, student_group: str = None,
-                 student_phone: str = None, student_problem_status: str = None):
-    now = now_iso()
-    today = now[:10]
+def _insert_one_task(from_teacher_id, to_teacher_id, to_role, text, urgent, deadline, category,
+                      student_name, student_group, student_phone, student_problem_status, created_at):
+    today = created_at[:10]
     count_today = _conn.execute(
         "SELECT COUNT(*) AS c FROM tasks WHERE date(created_at)=?", (today,)
     ).fetchone()["c"]
@@ -1726,9 +1737,46 @@ def create_task(from_teacher_id: str, text: str, to_teacher_id: str = None, to_r
                             status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
     """, (from_teacher_id, to_teacher_id, to_role, text, 1 if urgent else 0, deadline, category,
-          daily_number, student_name, student_group, student_phone, student_problem_status, now))
+          daily_number, student_name, student_group, student_phone, student_problem_status, created_at))
     _conn.commit()
     return _conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+
+def create_task(from_teacher_id: str, text: str, to_teacher_id: str = None, to_role: str = None,
+                 urgent: bool = False, deadline: str = None, category: str = None,
+                 student_name: str = None, student_group: str = None,
+                 student_phone: str = None, student_problem_status: str = None):
+    """
+    Aniq xodimga yuborilsa — bitta yozuv.
+
+    BUTUN ROLGA yuborilsa — bitta umumiy yozuv EMAS, balki o'sha roldagi HAR BIR faol
+    xodimga ALOHIDA nusxa yaratiladi (har biri o'z to_teacher_id'siga ega). Aks holda
+    bitta umumiy yozuv bo'lganida, xodimlardan biri "Bajarildi" desa, bu holat
+    BOSHQA barcha xodimlarning ekranida ham o'zgarib qolar edi — garchi ular hech
+    narsa qilmagan bo'lsalar ham. Endi har biri mustaqil ravishda o'z nusxasini
+    ko'radi, boshlaydi va bajaradi; hisobotlar/reyting ham to'g'ri ishlaydi, chunki
+    ular allaqachon to_teacher_id bo'yicha hisoblanadi.
+
+    Qaytaradi: yaratilgan topshiriq(lar) ID'lari ro'yxati.
+    """
+    now = now_iso()
+    common = dict(
+        from_teacher_id=from_teacher_id, text=text, urgent=urgent, deadline=deadline,
+        category=category, student_name=student_name, student_group=student_group,
+        student_phone=student_phone, student_problem_status=student_problem_status,
+        created_at=now,
+    )
+
+    if to_role and not to_teacher_id:
+        recipients = [e["teacher_id"] for e in list_employees(role=to_role) if e["teacher_id"] != from_teacher_id]
+        if not recipients:
+            return []
+        return [
+            _insert_one_task(to_teacher_id=rid, to_role=to_role, **common)
+            for rid in recipients
+        ]
+
+    return [_insert_one_task(to_teacher_id=to_teacher_id, to_role=to_role, **common)]
 
 
 def get_task(task_id: int):

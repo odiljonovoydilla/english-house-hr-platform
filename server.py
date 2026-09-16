@@ -403,7 +403,7 @@ def _expense_for_teacher(t, month: str, grade_rates: dict) -> float:
 
 def _last_n_months(n: int):
     out = []
-    d = date.today().replace(day=1)
+    d = db.tashkent_now().date().replace(day=1)
     for _ in range(n):
         out.append(d.strftime("%Y-%m"))
         if d.month == 1:
@@ -2820,8 +2820,7 @@ def _task_to_dict(row, category_labels=None, role_penalties=None):
 
 
 def _todaystr_for_tasks():
-    from datetime import date as _d
-    return _d.today().isoformat()
+    return db.tashkent_today_str()
 
 
 @app.post("/api/tasks")
@@ -2847,7 +2846,7 @@ async def api_create_task(
     if to_teacher_id and not db.get_employee(to_teacher_id):
         raise HTTPException(status_code=404, detail="Qabul qiluvchi xodim topilmadi")
 
-    task_id = db.create_task(
+    task_ids = db.create_task(
         from_teacher_id=emp["teacher_id"], text=text,
         to_teacher_id=to_teacher_id, to_role=to_role, urgent=urgent,
         deadline=deadline, category=category,
@@ -2856,6 +2855,8 @@ async def api_create_task(
         student_phone=body.get("student_phone") or None,
         student_problem_status=body.get("student_problem_status") or None,
     )
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="Tanlangan rolda faol xodim topilmadi")
 
     # Telegram orqali darhol bildirishnoma yuboramiz
     prefix = "🔴 SHOSHILINCH TOPSHIRIQ" if urgent else "📋 Yangi topshiriq"
@@ -2872,7 +2873,7 @@ async def api_create_task(
             if t["telegram_id"]:
                 await send_message(t["telegram_id"], notif_text, reply_markup=_open_app_keyboard())
 
-    return {"ok": True, "id": task_id}
+    return {"ok": True, "id": task_ids[0], "ids": task_ids, "count": len(task_ids)}
 
 
 @app.get("/api/tasks/inbox")

@@ -658,6 +658,7 @@ const TEACHER_NAV_ITEMS = [
   { id: "teacher", icon: "🧑‍🏫", label: "Teacher" },
   { id: "kpi", icon: "📊", label: "KPI" },
   { id: "salary", icon: "💰", label: "Ish haqi" },
+  { id: "students", icon: "🎒", label: "O'quvchilarim" },
   { id: "tasks", icon: "📋", label: "Topshiriqlar" },
   { id: "rules", icon: "📜", label: "Asosiy qoidalar" },
 ];
@@ -678,6 +679,7 @@ function renderTeacherTab(tab, box, me) {
   if (tab === "teacher") renderTeacherProfileSection(box);
   else if (tab === "kpi") renderTeacherKpiSection(box);
   else if (tab === "salary") renderTeacherSalarySection(box);
+  else if (tab === "students") renderMyStudentsSection(box);
   else if (tab === "tasks") renderTasksTab(box, me);
   else if (tab === "rules") renderKpiRulesTab(box);
 }
@@ -933,6 +935,7 @@ async function renderStaffSalarySection(box, me) {
 const SUBJECT_TEACHER_NAV_ITEMS = [
   { id: "profile", icon: "👤", label: "Ma'lumotim" },
   { id: "salary", icon: "💰", label: "Ish haqi" },
+  { id: "students", icon: "🎒", label: "O'quvchilarim" },
   { id: "tasks", icon: "📋", label: "Topshiriqlar" },
 ];
 
@@ -951,6 +954,7 @@ function renderSubjectTeacherTab(tab, box, me) {
   box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
   if (tab === "profile") renderSubjectTeacherProfileSection(box);
   else if (tab === "salary") renderSubjectTeacherSalarySection(box);
+  else if (tab === "students") renderMyStudentsSection(box);
   else if (tab === "tasks") renderTasksTab(box, me);
 }
 
@@ -1753,6 +1757,281 @@ async function loadMySummary(box) {
   } catch (err) {
     box.innerHTML = "";
   }
+}
+
+// ============================================================
+// MENING O'QUVCHILARIM — o'qituvchining shaxsiy o'quvchilar bazasi
+// ============================================================
+
+function _studentInitials(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  return parts.slice(0, 2).map((p) => p[0].toUpperCase()).join("");
+}
+
+function _studentGenderIcon(gender) {
+  if (gender === "Qiz bola") return "👧";
+  if (gender === "O'g'il bola") return "👦";
+  return "🎒";
+}
+
+function _studentAttr(v) {
+  if (v === null || v === undefined) return "";
+  return String(v).replace(/"/g, "&quot;");
+}
+
+async function renderMyStudentsSection(box) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  try {
+    const students = await api("/api/my-students");
+    _renderStudentsList(box, students);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+  }
+}
+
+function _renderStudentsList(box, students) {
+  box.innerHTML = `
+    <div class="students-head-row">
+      <div class="students-count-chip">👥 ${students.length} ta o'quvchi</div>
+    </div>
+    <input id="studentSearchInput" type="text" placeholder="🔍 Ism yoki tel raqam bo'yicha qidirish..." />
+    <button class="primary" id="addStudentBtn">➕ Yangi o'quvchi qo'shish</button>
+    <div class="student-list" id="studentListContainer"></div>
+  `;
+
+  const listContainer = box.querySelector("#studentListContainer");
+
+  function renderRows(filtered) {
+    listContainer.innerHTML = filtered.length
+      ? filtered.map((s) => `
+          <div class="student-row" data-id="${s.id}">
+            <div class="student-avatar">${_studentInitials(s.full_name)}</div>
+            <div class="student-row-main">
+              <div class="student-row-name">${s.full_name}</div>
+              <div class="student-row-meta">${_studentGenderIcon(s.gender)}${s.age ? ` ${s.age} yosh` : ""}${s.class_grade ? ` · ${s.class_grade}-sinf` : ""}${s.course ? ` · ${s.course}` : ""}</div>
+            </div>
+            <div class="menu-arrow">›</div>
+          </div>
+        `).join("")
+      : `<div class="students-empty">
+          <div class="students-empty-icon">🎒</div>
+          <div class="students-empty-text">${students.length ? "Hech narsa topilmadi" : "Hali o'quvchi qo'shilmagan"}</div>
+          ${students.length ? "" : `<div class="students-empty-sub">Yuqoridagi tugma orqali birinchi o'quvchini qo'shing</div>`}
+        </div>`;
+
+    listContainer.querySelectorAll(".student-row").forEach((row) => {
+      row.addEventListener("click", () => renderStudentDetail(box, Number(row.dataset.id)));
+    });
+  }
+
+  renderRows(students);
+
+  box.querySelector("#studentSearchInput").addEventListener("input", (e) => {
+    const term = e.target.value.trim().toLowerCase();
+    const filtered = term
+      ? students.filter((s) => (s.full_name || "").toLowerCase().includes(term) || (s.phone || "").includes(term))
+      : students;
+    renderRows(filtered);
+  });
+
+  box.querySelector("#addStudentBtn").addEventListener("click", () => {
+    renderStudentAddForm(box);
+  });
+}
+
+function _studentFormHtml(s) {
+  const g = s.gender || "";
+  return `
+    <h2>👤 Shaxsiy ma'lumotlar</h2>
+    <div class="card">
+      <label>FIO (to'liq)</label>
+      <input id="sf_full_name" type="text" placeholder="masalan: Aliyev Alisher Bahodir o'g'li" value="${_studentAttr(s.full_name)}" />
+
+      <label>Yoshi</label>
+      <input id="sf_age" type="number" min="0" max="30" placeholder="masalan: 12" value="${_studentAttr(s.age)}" />
+
+      <label>Jinsi</label>
+      <select id="sf_gender">
+        <option value="" ${g === "" ? "selected" : ""}>Tanlanmagan</option>
+        <option value="O'g'il bola" ${g === "O'g'il bola" ? "selected" : ""}>👦 O'g'il bola</option>
+        <option value="Qiz bola" ${g === "Qiz bola" ? "selected" : ""}>👧 Qiz bola</option>
+      </select>
+    </div>
+
+    <h2>👪 Oila ma'lumotlari</h2>
+    <div class="card">
+      <label>Ota-onasi ismi</label>
+      <input id="sf_parent_name" type="text" placeholder="masalan: Aliyeva Malika" value="${_studentAttr(s.parent_name)}" />
+
+      <label>Tel raqam</label>
+      <input id="sf_phone" type="tel" placeholder="+998 XX XXX XX XX" value="${s.phone ? _studentAttr(s.phone) : "+998 "}" />
+
+      <label>Qo'shimcha tel raqam</label>
+      <input id="sf_phone2" type="tel" placeholder="+998 XX XXX XX XX (ixtiyoriy)" value="${_studentAttr(s.phone2)}" />
+
+      <label>Oilada nechta farzand</label>
+      <input id="sf_siblings_count" type="number" min="0" max="20" placeholder="masalan: 3" value="${_studentAttr(s.siblings_count)}" />
+    </div>
+
+    <h2>📍 Manzil</h2>
+    <div class="card">
+      <label>Tumani</label>
+      <input id="sf_district" type="text" placeholder="masalan: Chilonzor" value="${_studentAttr(s.district)}" />
+
+      <label>MFY (mahalla)</label>
+      <input id="sf_mahalla" type="text" placeholder="masalan: Oq oltin" value="${_studentAttr(s.mahalla)}" />
+    </div>
+
+    <h2>🎓 Ta'lim ma'lumotlari</h2>
+    <div class="card">
+      <label>Maktab raqami</label>
+      <input id="sf_school_number" type="text" placeholder="masalan: 267" value="${_studentAttr(s.school_number)}" />
+
+      <label>Sinfi</label>
+      <input id="sf_class_grade" type="text" placeholder="masalan: 7-A" value="${_studentAttr(s.class_grade)}" />
+
+      <label>Kursi (English House)</label>
+      <input id="sf_course" type="text" placeholder="masalan: Pre-Intermediate" value="${_studentAttr(s.course)}" />
+    </div>
+  `;
+}
+
+function _wireStudentForm(box) {
+  const phone = box.querySelector("#sf_phone");
+  const phone2 = box.querySelector("#sf_phone2");
+  phone.addEventListener("input", () => { phone.value = _formatUzPhone(phone.value); });
+  phone2.addEventListener("input", () => { phone2.value = _formatUzPhone(phone2.value); });
+}
+
+function _readStudentForm(box) {
+  const val = (id) => box.querySelector(id).value.trim();
+  const numOrNull = (id) => {
+    const v = val(id);
+    return v === "" ? null : Number(v);
+  };
+  const phoneOrNull = (id) => _parseUzPhone(box.querySelector(id).value);
+
+  return {
+    full_name: val("#sf_full_name"),
+    age: numOrNull("#sf_age"),
+    gender: box.querySelector("#sf_gender").value || null,
+    parent_name: val("#sf_parent_name") || null,
+    phone: phoneOrNull("#sf_phone"),
+    phone2: phoneOrNull("#sf_phone2"),
+    siblings_count: numOrNull("#sf_siblings_count"),
+    district: val("#sf_district") || null,
+    mahalla: val("#sf_mahalla") || null,
+    school_number: val("#sf_school_number") || null,
+    class_grade: val("#sf_class_grade") || null,
+    course: val("#sf_course") || null,
+  };
+}
+
+function renderStudentAddForm(box) {
+  box.innerHTML = `
+    <button class="back-btn" id="studentFormBackBtn">← Ro'yxatga qaytish</button>
+    <div class="teacher-hero" style="padding-top:4px;">
+      <div class="student-detail-avatar">🎒</div>
+      <h1 style="margin-bottom:2px;">Yangi o'quvchi</h1>
+      <div class="teacher-sub">Ma'lumotlarini to'ldiring</div>
+    </div>
+    ${_studentFormHtml({})}
+    <button class="primary" id="saveStudentBtn">✅ Saqlash</button>
+    <div id="studentFormMsg" style="margin-top:8px;font-size:13px;"></div>
+  `;
+
+  box.querySelector("#studentFormBackBtn").addEventListener("click", () => renderMyStudentsSection(box));
+  _wireStudentForm(box);
+
+  box.querySelector("#saveStudentBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#studentFormMsg");
+    const data = _readStudentForm(box);
+    if (!data.full_name) {
+      msg.innerHTML = `<span class="badge warn">❌ FIO to'ldirilishi shart</span>`;
+      return;
+    }
+    const btn = box.querySelector("#saveStudentBtn");
+    btn.disabled = true;
+    try {
+      await api("/api/my-students", { method: "POST", body: JSON.stringify(data) });
+      showToast("✅ O'quvchi qo'shildi");
+      renderMyStudentsSection(box);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      btn.disabled = false;
+    }
+  });
+}
+
+async function renderStudentDetail(box, studentId) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let s;
+  try {
+    s = await api(`/api/my-students/${studentId}`);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+
+  box.innerHTML = `
+    <button class="back-btn" id="studentDetailBackBtn">← Ro'yxatga qaytish</button>
+    <div class="teacher-hero" style="padding-top:4px;">
+      <div class="student-detail-avatar">${_studentInitials(s.full_name)}</div>
+      <h1 style="margin-bottom:2px;">${s.full_name}</h1>
+      <div class="teacher-sub">${_studentGenderIcon(s.gender)} ${s.gender || "Jinsi kiritilmagan"}${s.age ? ` · ${s.age} yosh` : ""}</div>
+    </div>
+
+    ${_studentFormHtml(s)}
+
+    <h2>📋 Anketa</h2>
+    <div class="card students-anketa-stub">
+      <div class="students-anketa-icon">🗒️</div>
+      <div class="students-anketa-text">Anketa savollari tez orada shu yerga qo'shiladi.</div>
+    </div>
+
+    <button class="primary" id="saveStudentDetailBtn">✅ O'zgarishlarni saqlash</button>
+    <button class="secondary" id="deleteStudentBtn">🗑️ O'quvchini o'chirish</button>
+    <div id="studentDetailMsg" style="margin-top:8px;font-size:13px;"></div>
+  `;
+
+  box.querySelector("#studentDetailBackBtn").addEventListener("click", () => renderMyStudentsSection(box));
+  _wireStudentForm(box);
+
+  box.querySelector("#saveStudentDetailBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#studentDetailMsg");
+    const data = _readStudentForm(box);
+    if (!data.full_name) {
+      msg.innerHTML = `<span class="badge warn">❌ FIO to'ldirilishi shart</span>`;
+      return;
+    }
+    const btn = box.querySelector("#saveStudentDetailBtn");
+    btn.disabled = true;
+    try {
+      await api(`/api/my-students/${studentId}`, { method: "PATCH", body: JSON.stringify(data) });
+      showToast("✅ Saqlandi");
+      btn.disabled = false;
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      btn.disabled = false;
+    }
+  });
+
+  box.querySelector("#deleteStudentBtn").addEventListener("click", () => {
+    showConfirm(
+      "O'quvchini o'chirish",
+      `<b>${s.full_name}</b>ni ro'yxatdan o'chirmoqchimisiz? Bu amalni qaytarib bo'lmaydi.`,
+      async () => {
+        try {
+          await api(`/api/my-students/${studentId}`, { method: "DELETE" });
+          showToast("🗑️ O'quvchi o'chirildi");
+          renderMyStudentsSection(box);
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      }
+    );
+  });
 }
 
 async function renderTasksTab(box, me) {

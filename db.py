@@ -589,6 +589,29 @@ def init_db():
     )
     """)
 
+    # O'qituvchining shaxsiy o'quvchilar bazasi ("Mening o'quvchilarim")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_id TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        age INTEGER,
+        gender TEXT,
+        parent_name TEXT,
+        phone TEXT,
+        phone2 TEXT,
+        siblings_count INTEGER,
+        district TEXT,
+        mahalla TEXT,
+        school_number TEXT,
+        class_grade TEXT,
+        course TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+
     # Eski bazalarda yo'q bo'lishi mumkin bo'lgan ustunlar (xavfsiz migratsiya)
     _add_column_if_missing("tasks", "deadline", "TEXT")
     _add_column_if_missing("tasks", "category", "TEXT")
@@ -2162,3 +2185,75 @@ def import_legacy_data(payload: dict) -> dict:
 
     _conn.commit()
     return counts
+
+
+# ---------- O'QITUVCHINING SHAXSIY O'QUVCHILAR BAZASI ----------
+
+def add_student(teacher_id: str, full_name: str, age: int = None, gender: str = None,
+                 parent_name: str = None, phone: str = None, phone2: str = None,
+                 siblings_count: int = None, district: str = None, mahalla: str = None,
+                 school_number: str = None, class_grade: str = None, course: str = None):
+    now = now_iso()
+    _conn.execute("""
+        INSERT INTO students (teacher_id, full_name, age, gender, parent_name, phone, phone2,
+                               siblings_count, district, mahalla, school_number, class_grade, course,
+                               active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    """, (teacher_id, full_name, age, gender, parent_name, phone, phone2,
+          siblings_count, district, mahalla, school_number, class_grade, course, now, now))
+    _conn.commit()
+    return _conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+
+def get_student(student_id: int):
+    return _conn.execute("SELECT * FROM students WHERE id=?", (student_id,)).fetchone()
+
+
+def list_students_by_teacher(teacher_id: str):
+    return _conn.execute(
+        "SELECT * FROM students WHERE teacher_id=? AND active=1 ORDER BY full_name COLLATE NOCASE",
+        (teacher_id,)
+    ).fetchall()
+
+
+def update_student(student_id: int, full_name: str = None, age: int = None, gender: str = None,
+                    parent_name: str = None, phone: str = None, phone2: str = None,
+                    siblings_count: int = None, district: str = None, mahalla: str = None,
+                    school_number: str = None, class_grade: str = None, course: str = None):
+    fields, values = [], []
+    if full_name is not None:
+        fields.append("full_name=?"); values.append(full_name)
+    if age is not None:
+        fields.append("age=?"); values.append(age)
+    if gender is not None:
+        fields.append("gender=?"); values.append(gender)
+    if parent_name is not None:
+        fields.append("parent_name=?"); values.append(parent_name)
+    if phone is not None:
+        fields.append("phone=?"); values.append(phone)
+    if phone2 is not None:
+        fields.append("phone2=?"); values.append(phone2)
+    if siblings_count is not None:
+        fields.append("siblings_count=?"); values.append(siblings_count)
+    if district is not None:
+        fields.append("district=?"); values.append(district)
+    if mahalla is not None:
+        fields.append("mahalla=?"); values.append(mahalla)
+    if school_number is not None:
+        fields.append("school_number=?"); values.append(school_number)
+    if class_grade is not None:
+        fields.append("class_grade=?"); values.append(class_grade)
+    if course is not None:
+        fields.append("course=?"); values.append(course)
+
+    if not fields:
+        return
+    fields.append("updated_at=?"); values.append(now_iso())
+    values.append(student_id)
+    _conn.execute(f"UPDATE students SET {', '.join(fields)} WHERE id=?", values)
+    _conn.commit()
+
+
+def deactivate_student(student_id: int):
+    _conn.execute("UPDATE students SET active=0, updated_at=? WHERE id=?", (now_iso(), student_id))
+    _conn.commit()

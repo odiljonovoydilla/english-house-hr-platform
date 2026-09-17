@@ -3233,6 +3233,90 @@ def api_tasks_my_summary(start: str, end: str, x_telegram_init_data: str = Heade
     }
 
 
+@app.get("/api/my-students")
+def api_my_students(x_telegram_init_data: str = Header(None)):
+    """O'qituvchining o'ziga tegishli o'quvchilar ro'yxati."""
+    emp = get_current_employee(x_telegram_init_data)
+    rows = db.list_students_by_teacher(emp["teacher_id"])
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/my-students")
+async def api_add_student(request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    body = await request.json()
+
+    full_name = (body.get("full_name") or "").strip()
+    if not full_name:
+        raise HTTPException(status_code=400, detail="FIO to'ldirilishi shart")
+
+    student_id = db.add_student(
+        teacher_id=emp["teacher_id"],
+        full_name=full_name,
+        age=body.get("age"),
+        gender=body.get("gender"),
+        parent_name=body.get("parent_name"),
+        phone=body.get("phone"),
+        phone2=body.get("phone2"),
+        siblings_count=body.get("siblings_count"),
+        district=body.get("district"),
+        mahalla=body.get("mahalla"),
+        school_number=body.get("school_number"),
+        class_grade=body.get("class_grade"),
+        course=body.get("course"),
+    )
+    return {"ok": True, "id": student_id}
+
+
+@app.get("/api/my-students/{student_id}")
+def api_get_student(student_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_student(student_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+    return dict(row)
+
+
+@app.patch("/api/my-students/{student_id}")
+async def api_update_student(student_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_student(student_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+
+    body = await request.json()
+    full_name = body.get("full_name")
+    if full_name is not None and not full_name.strip():
+        raise HTTPException(status_code=400, detail="FIO to'ldirilishi shart")
+
+    db.update_student(
+        student_id,
+        full_name=full_name.strip() if full_name is not None else None,
+        age=body.get("age"),
+        gender=body.get("gender"),
+        parent_name=body.get("parent_name"),
+        phone=body.get("phone"),
+        phone2=body.get("phone2"),
+        siblings_count=body.get("siblings_count"),
+        district=body.get("district"),
+        mahalla=body.get("mahalla"),
+        school_number=body.get("school_number"),
+        class_grade=body.get("class_grade"),
+        course=body.get("course"),
+    )
+    return {"ok": True}
+
+
+@app.delete("/api/my-students/{student_id}")
+def api_delete_student(student_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_student(student_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+    db.deactivate_student(student_id)
+    return {"ok": True}
+
+
 @app.get("/api/reports/tasks-summary")
 def api_reports_tasks_summary(start: str, end: str, x_telegram_init_data: str = Header(None)):
     """

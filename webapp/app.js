@@ -1840,59 +1840,89 @@ function _renderStudentsList(box, students) {
   });
 }
 
-function _studentFormHtml(s) {
+function _studentFieldsHtml(s) {
   const g = s.gender || "";
   return `
-    <h2>👤 Shaxsiy ma'lumotlar</h2>
-    <div class="card">
-      <label>FIO (to'liq)</label>
-      <input id="sf_full_name" type="text" placeholder="masalan: Aliyev Alisher Bahodir o'g'li" value="${_studentAttr(s.full_name)}" />
+    <div class="sf-group-label">👤 Shaxsiy ma'lumotlar</div>
+    <label>FIO (to'liq)</label>
+    <input id="sf_full_name" type="text" placeholder="masalan: Aliyev Alisher Bahodir o'g'li" value="${_studentAttr(s.full_name)}" />
 
-      <label>Yoshi</label>
-      <input id="sf_age" type="number" min="0" max="30" placeholder="masalan: 12" value="${_studentAttr(s.age)}" />
+    <label>Yoshi</label>
+    <input id="sf_age" type="number" min="0" max="30" placeholder="masalan: 12" value="${_studentAttr(s.age)}" />
 
-      <label>Jinsi</label>
-      <select id="sf_gender">
-        <option value="" ${g === "" ? "selected" : ""}>Tanlanmagan</option>
-        <option value="O'g'il bola" ${g === "O'g'il bola" ? "selected" : ""}>👦 O'g'il bola</option>
-        <option value="Qiz bola" ${g === "Qiz bola" ? "selected" : ""}>👧 Qiz bola</option>
-      </select>
+    <label>Jinsi</label>
+    <select id="sf_gender">
+      <option value="" ${g === "" ? "selected" : ""}>Tanlanmagan</option>
+      <option value="O'g'il bola" ${g === "O'g'il bola" ? "selected" : ""}>👦 O'g'il bola</option>
+      <option value="Qiz bola" ${g === "Qiz bola" ? "selected" : ""}>👧 Qiz bola</option>
+    </select>
+
+    <div class="sf-group-label">👪 Oila ma'lumotlari</div>
+    <label>Ota-onasi ismi</label>
+    <input id="sf_parent_name" type="text" placeholder="masalan: Aliyeva Malika" value="${_studentAttr(s.parent_name)}" />
+
+    <label>Tel raqam</label>
+    <input id="sf_phone" type="tel" placeholder="+998 XX XXX XX XX" value="${s.phone ? _studentAttr(s.phone) : "+998 "}" />
+
+    <label>Qo'shimcha tel raqam</label>
+    <input id="sf_phone2" type="tel" placeholder="+998 XX XXX XX XX (ixtiyoriy)" value="${_studentAttr(s.phone2)}" />
+
+    <label>Oilada nechta farzand</label>
+    <input id="sf_siblings_count" type="number" min="0" max="20" placeholder="masalan: 3" value="${_studentAttr(s.siblings_count)}" />
+
+    <div class="sf-group-label">📍 Manzil</div>
+    <label>Tumani</label>
+    <input id="sf_district" type="text" placeholder="masalan: Chilonzor" value="${_studentAttr(s.district)}" />
+
+    <label>MFY (mahalla)</label>
+    <input id="sf_mahalla" type="text" placeholder="masalan: Oq oltin" value="${_studentAttr(s.mahalla)}" />
+
+    <div class="sf-group-label">🎓 Ta'lim ma'lumotlari</div>
+    <label>Maktab raqami</label>
+    <input id="sf_school_number" type="text" placeholder="masalan: 267" value="${_studentAttr(s.school_number)}" />
+
+    <label>Sinfi</label>
+    <input id="sf_class_grade" type="text" placeholder="masalan: 7-A" value="${_studentAttr(s.class_grade)}" />
+
+    <label>Kursi (English House)</label>
+    <input id="sf_course" type="text" placeholder="masalan: Pre-Intermediate" value="${_studentAttr(s.course)}" />
+  `;
+}
+
+function _studentFormHtml(s, opts) {
+  const startOpen = !!(opts && opts.startOpen);
+  const demoDisplay = startOpen ? "block" : "none";
+  const demoChevron = startOpen ? "︿" : "⌄";
+  return `
+    <div class="rule-criterion-card">
+      <div class="rule-criterion-head" data-toggle="sf_demo_body">
+        <span class="rule-criterion-icon">📋</span>
+        <div class="rule-criterion-titles">
+          <div class="rule-criterion-label">Demografik ma'lumotlar</div>
+          <div class="rule-criterion-sub">FIO, yoshi, oilasi, manzili va ta'lim ma'lumotlari</div>
+        </div>
+        <span class="rule-criterion-chevron">${demoChevron}</span>
+      </div>
+      <div class="rule-criterion-body" id="sf_demo_body" style="display:${demoDisplay};">
+        ${_studentFieldsHtml(s)}
+      </div>
     </div>
 
-    <h2>👪 Oila ma'lumotlari</h2>
-    <div class="card">
-      <label>Ota-onasi ismi</label>
-      <input id="sf_parent_name" type="text" placeholder="masalan: Aliyeva Malika" value="${_studentAttr(s.parent_name)}" />
-
-      <label>Tel raqam</label>
-      <input id="sf_phone" type="tel" placeholder="+998 XX XXX XX XX" value="${s.phone ? _studentAttr(s.phone) : "+998 "}" />
-
-      <label>Qo'shimcha tel raqam</label>
-      <input id="sf_phone2" type="tel" placeholder="+998 XX XXX XX XX (ixtiyoriy)" value="${_studentAttr(s.phone2)}" />
-
-      <label>Oilada nechta farzand</label>
-      <input id="sf_siblings_count" type="number" min="0" max="20" placeholder="masalan: 3" value="${_studentAttr(s.siblings_count)}" />
-    </div>
-
-    <h2>📍 Manzil</h2>
-    <div class="card">
-      <label>Tumani</label>
-      <input id="sf_district" type="text" placeholder="masalan: Chilonzor" value="${_studentAttr(s.district)}" />
-
-      <label>MFY (mahalla)</label>
-      <input id="sf_mahalla" type="text" placeholder="masalan: Oq oltin" value="${_studentAttr(s.mahalla)}" />
-    </div>
-
-    <h2>🎓 Ta'lim ma'lumotlari</h2>
-    <div class="card">
-      <label>Maktab raqami</label>
-      <input id="sf_school_number" type="text" placeholder="masalan: 267" value="${_studentAttr(s.school_number)}" />
-
-      <label>Sinfi</label>
-      <input id="sf_class_grade" type="text" placeholder="masalan: 7-A" value="${_studentAttr(s.class_grade)}" />
-
-      <label>Kursi (English House)</label>
-      <input id="sf_course" type="text" placeholder="masalan: Pre-Intermediate" value="${_studentAttr(s.course)}" />
+    <div class="rule-criterion-card">
+      <div class="rule-criterion-head" data-toggle="sf_extra_body">
+        <span class="rule-criterion-icon">➕</span>
+        <div class="rule-criterion-titles">
+          <div class="rule-criterion-label">Qo'shimcha ma'lumotlar</div>
+          <div class="rule-criterion-sub">Anketa va boshqa qo'shimcha ma'lumotlar</div>
+        </div>
+        <span class="rule-criterion-chevron">⌄</span>
+      </div>
+      <div class="rule-criterion-body" id="sf_extra_body" style="display:none;">
+        <div class="students-anketa-stub">
+          <div class="students-anketa-icon">🗒️</div>
+          <div class="students-anketa-text">Anketa savollari tez orada shu yerga qo'shiladi.</div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -1936,13 +1966,14 @@ function renderStudentAddForm(box) {
       <h1 style="margin-bottom:2px;">Yangi o'quvchi</h1>
       <div class="teacher-sub">Ma'lumotlarini to'ldiring</div>
     </div>
-    ${_studentFormHtml({})}
+    ${_studentFormHtml({}, { startOpen: true })}
     <button class="primary" id="saveStudentBtn">✅ Saqlash</button>
     <div id="studentFormMsg" style="margin-top:8px;font-size:13px;"></div>
   `;
 
   box.querySelector("#studentFormBackBtn").addEventListener("click", () => renderMyStudentsSection(box));
   _wireStudentForm(box);
+  _wireRuleToggles(box);
 
   box.querySelector("#saveStudentBtn").addEventListener("click", async () => {
     const msg = box.querySelector("#studentFormMsg");
@@ -1982,13 +2013,7 @@ async function renderStudentDetail(box, studentId) {
       <div class="teacher-sub">${_studentGenderIcon(s.gender)} ${s.gender || "Jinsi kiritilmagan"}${s.age ? ` · ${s.age} yosh` : ""}</div>
     </div>
 
-    ${_studentFormHtml(s)}
-
-    <h2>📋 Anketa</h2>
-    <div class="card students-anketa-stub">
-      <div class="students-anketa-icon">🗒️</div>
-      <div class="students-anketa-text">Anketa savollari tez orada shu yerga qo'shiladi.</div>
-    </div>
+    ${_studentFormHtml(s, { startOpen: false })}
 
     <button class="primary" id="saveStudentDetailBtn">✅ O'zgarishlarni saqlash</button>
     <button class="secondary" id="deleteStudentBtn">🗑️ O'quvchini o'chirish</button>
@@ -1997,6 +2022,7 @@ async function renderStudentDetail(box, studentId) {
 
   box.querySelector("#studentDetailBackBtn").addEventListener("click", () => renderMyStudentsSection(box));
   _wireStudentForm(box);
+  _wireRuleToggles(box);
 
   box.querySelector("#saveStudentDetailBtn").addEventListener("click", async () => {
     const msg = box.querySelector("#studentDetailMsg");

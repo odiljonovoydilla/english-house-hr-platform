@@ -1379,3 +1379,13 @@ body.shell-active { padding-bottom: 0; }
 }
 .students-anketa-icon { font-size: 26px; margin-bottom: 6px; }
 .students-anketa-text { font-size: 13px; }
+
+.sf-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 16px 0 8px;
+}
+.sf-group-label:first-child { margin-top: 4px; }

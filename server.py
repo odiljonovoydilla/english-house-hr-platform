@@ -3176,6 +3176,36 @@ async def api_delete_task_problem_status(request: Request, x_telegram_init_data:
     return {"ok": True}
 
 
+@app.get("/api/group-absence-reasons")
+def api_get_group_absence_reasons(x_telegram_init_data: str = Header(None)):
+    get_current_employee(x_telegram_init_data)
+    return [dict(r) for r in db.list_absence_reasons()]
+
+
+@app.post("/api/settings/group-absence-reasons/add")
+async def api_add_group_absence_reason(request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_ceo(emp)
+    body = await request.json()
+    label = (body.get("label") or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="'label' to'ldirilishi shart")
+    db.add_absence_reason(label)
+    return {"ok": True}
+
+
+@app.post("/api/settings/group-absence-reasons/delete")
+async def api_delete_group_absence_reason(request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_ceo(emp)
+    body = await request.json()
+    reason_id = body.get("id")
+    if not reason_id:
+        raise HTTPException(status_code=400, detail="'id' to'ldirilishi shart")
+    db.delete_absence_reason(reason_id)
+    return {"ok": True}
+
+
 @app.get("/api/settings/task-penalties")
 def api_get_task_penalties(x_telegram_init_data: str = Header(None)):
     emp = get_current_employee(x_telegram_init_data)
@@ -3502,9 +3532,12 @@ def api_group_attendance(group_id: int, year: int, month: int, x_telegram_init_d
     row = _require_own_group(group_id, emp)
     dates = db.compute_lesson_dates(row["lesson_days"], year, month, row["start_date"], row["end_date"])
     values = {}
+    reasons = {}
     for r in db.list_attendance(group_id, dates):
         values.setdefault(r["student_id"], {})[r["lesson_date"]] = r["status"]
-    return {"dates": dates, "values": values}
+        if r["reason"]:
+            reasons.setdefault(r["student_id"], {})[r["lesson_date"]] = r["reason"]
+    return {"dates": dates, "values": values, "reasons": reasons}
 
 
 @app.post("/api/my-groups/{group_id}/attendance")
@@ -3513,7 +3546,7 @@ async def api_set_group_attendance(group_id: int, request: Request, x_telegram_i
     _require_own_group(group_id, emp)
     body = await request.json()
     _require_own_student_of_group(body.get("student_id"), emp)
-    db.set_attendance(group_id, body["student_id"], body["lesson_date"], body.get("status"))
+    db.set_attendance(group_id, body["student_id"], body["lesson_date"], body.get("status"), body.get("reason"))
     return {"ok": True}
 
 

@@ -2530,8 +2530,83 @@ function _renderGroupTab(tabContent, g, groupId, tab) {
   else if (tab === "comments") _renderCommentsTab(tabContent, g, groupId);
 }
 
-const ATTENDANCE_CYCLE = ["present", "absent", "excused", "late"];
-const ATTENDANCE_ICON = { present: "✅", absent: "⬜", excused: "🟡", late: "🟠" };
+const ATTENDANCE_CELL_HTML = {
+  present: `<span class="pivot-flag pivot-flag-present">✓</span>`,
+  late: `<span class="pivot-flag pivot-flag-late">⚑</span>`,
+  absent: `<span class="pivot-flag pivot-flag-absent">⚑</span>`,
+};
+
+let _absenceReasonsCache = null;
+async function _loadAbsenceReasons() {
+  if (_absenceReasonsCache) return _absenceReasonsCache;
+  _absenceReasonsCache = await api("/api/group-absence-reasons");
+  return _absenceReasonsCache;
+}
+
+async function _showAttendanceCellModal(groupId, studentId, date, currentStatus, currentReason, onSaved) {
+  const reasons = await _loadAbsenceReasons();
+  let selected = currentStatus || null;
+
+  const overlay = el(`
+    <div class="modal-overlay">
+      <div class="modal-box">
+        <h3>Davomat belgilash</h3>
+        <div class="modal-message">
+          <div class="attendance-choice-row">
+            <button class="att-choice-btn ${selected === "present" ? "active" : ""}" data-choice="present">✅ Keldi</button>
+            <button class="att-choice-btn ${selected === "late" ? "active" : ""}" data-choice="late">🚩 Kech qoldi</button>
+            <button class="att-choice-btn ${selected === "absent" ? "active" : ""}" data-choice="absent">🚩 Kelmadi</button>
+          </div>
+          <div id="attReasonWrap" style="display:${selected === "absent" ? "block" : "none"};margin-top:12px;">
+            <label>Kelmaganlik sababi</label>
+            <select id="attReasonSelect">
+              <option value="">Sababni tanlang</option>
+              ${reasons.map((r) => `<option value="${r.label}" ${currentReason === r.label ? "selected" : ""}>${r.label}</option>`).join("")}
+            </select>
+            <div id="attReasonMsg" style="font-size:12px;"></div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary" id="modalCancel">Bekor qilish</button>
+          <button class="primary" id="modalSave">Saqlash</button>
+        </div>
+      </div>
+    </div>
+  `);
+  document.body.appendChild(overlay);
+
+  overlay.querySelectorAll(".att-choice-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selected = btn.dataset.choice;
+      overlay.querySelectorAll(".att-choice-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      overlay.querySelector("#attReasonWrap").style.display = selected === "absent" ? "block" : "none";
+    });
+  });
+
+  overlay.querySelector("#modalCancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#modalSave").addEventListener("click", async () => {
+    if (!selected) { overlay.remove(); return; }
+    let reason = null;
+    if (selected === "absent") {
+      reason = overlay.querySelector("#attReasonSelect").value;
+      if (!reason) {
+        overlay.querySelector("#attReasonMsg").innerHTML = `<span class="badge warn">❌ Sababni tanlang</span>`;
+        return;
+      }
+    }
+    try {
+      await api(`/api/my-groups/${groupId}/attendance`, {
+        method: "POST",
+        body: JSON.stringify({ student_id: studentId, lesson_date: date, status: selected, reason }),
+      });
+      overlay.remove();
+      onSaved(selected, reason);
+    } catch (err) {
+      overlay.remove();
+      safeAlert("Xato: " + err.message);
+    }
+  });
+}
 
 async function _renderAttendanceTab(box, g, groupId) {
   const now = new Date();
@@ -2557,7 +2632,7 @@ async function _renderAttendanceTab(box, g, groupId) {
         <td class="pivot-name-cell">${s.full_name}</td>
         ${dates.map((d) => {
           const status = (data.values[s.id] || {})[d];
-          return `<td><button class="pivot-cell" data-student="${s.id}" data-date="${d}">${status ? ATTENDANCE_ICON[status] || "" : ""}</button></td>`;
+          return `<td><button class="pivot-cell" data-student="${s.id}" data-date="${d}">${status ? ATTENDANCE_CELL_HTML[status] || "" : ""}</button></td>`;
         }).join("")}
       </tr>
     `).join("");
@@ -2571,33 +2646,25 @@ async function _renderAttendanceTab(box, g, groupId) {
         </table>
       </div>
       <div class="legend-row">
-        <div class="legend-item">✅ Keldi</div>
-        <div class="legend-item">⬜ Kelmadi</div>
-        <div class="legend-item">🟡 Sababli</div>
-        <div class="legend-item">🟠 Kech qoldi</div>
+        <div class="legend-item"><span class="pivot-flag pivot-flag-present" style="width:16px;height:16px;font-size:11px;">✓</span> Keldi</div>
+        <div class="legend-item"><span class="pivot-flag pivot-flag-late" style="width:16px;height:16px;font-size:11px;">⚑</span> Kech qoldi</div>
+        <div class="legend-item"><span class="pivot-flag pivot-flag-absent" style="width:16px;height:16px;font-size:11px;">⚑</span> Kelmadi</div>
       </div>
     ` : `${_monthNavHtml("att", year, month)}<div class="students-empty"><div class="students-empty-icon">📅</div><div class="students-empty-text">Bu oyda dars kuni yo'q</div></div>`;
 
     wireMonthNav();
 
     box.querySelectorAll(".pivot-cell").forEach((btn) => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", () => {
         const studentId = Number(btn.dataset.student);
         const date = btn.dataset.date;
-        const current = (data.values[studentId] || {})[date];
-        const idx = current ? ATTENDANCE_CYCLE.indexOf(current) : -1;
-        const next = ATTENDANCE_CYCLE[(idx + 1) % ATTENDANCE_CYCLE.length];
-        btn.textContent = ATTENDANCE_ICON[next];
-        try {
-          await api(`/api/my-groups/${groupId}/attendance`, {
-            method: "POST",
-            body: JSON.stringify({ student_id: studentId, lesson_date: date, status: next }),
-          });
+        const currentStatus = (data.values[studentId] || {})[date] || null;
+        const currentReason = (data.reasons[studentId] || {})[date] || null;
+        _showAttendanceCellModal(groupId, studentId, date, currentStatus, currentReason, (status) => {
+          btn.innerHTML = ATTENDANCE_CELL_HTML[status] || "";
           data.values[studentId] = data.values[studentId] || {};
-          data.values[studentId][date] = next;
-        } catch (err) {
-          safeAlert("Xato: " + err.message);
-        }
+          data.values[studentId][date] = status;
+        });
       });
     });
   }
@@ -7056,6 +7123,61 @@ async function renderTaskProblemStatusesSettings(box) {
   await load();
 }
 
+async function renderGroupAbsenceReasonsSettings(box) {
+  async function load() {
+    box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const reasons = await api("/api/group-absence-reasons");
+      box.innerHTML = `
+        <div class="task-category-manage-list">
+          ${reasons.map((r) => `
+            <div class="task-category-manage-row">
+              <span>${r.label}</span>
+              <button class="mini-btn" data-delete-reason="${r.id}">🗑️</button>
+            </div>
+          `).join("")}
+        </div>
+        <label>Yangi sabab</label>
+        <input id="newReasonLabel" type="text" placeholder="masalan: Sayohatda" />
+        <button class="primary" id="addReasonBtn" style="margin-top:8px;">+ Qo'shish</button>
+        <div id="reasonMsg" style="margin-top:8px;font-size:13px;"></div>
+      `;
+
+      box.querySelectorAll("[data-delete-reason]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          showConfirm("Sababni o'chirish", "Bu sabab butunlay o'chirilsinmi?", async () => {
+            try {
+              await api("/api/settings/group-absence-reasons/delete", {
+                method: "POST", body: JSON.stringify({ id: parseInt(btn.dataset.deleteReason, 10) }),
+              });
+              load();
+            } catch (err) {
+              safeAlert("Xato: " + err.message);
+            }
+          });
+        });
+      });
+
+      box.querySelector("#addReasonBtn").addEventListener("click", async () => {
+        const msg = box.querySelector("#reasonMsg");
+        const label = box.querySelector("#newReasonLabel").value.trim();
+        if (!label) { msg.innerHTML = `<span class="badge warn">❌ Nom kiriting</span>`; return; }
+        try {
+          await api("/api/settings/group-absence-reasons/add", {
+            method: "POST", body: JSON.stringify({ label }),
+          });
+          load();
+        } catch (err) {
+          msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+        }
+      });
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+  await load();
+}
+
 async function renderTaskPenaltiesSettings(box) {
   box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
   try {
@@ -7159,6 +7281,9 @@ async function renderSettingsTab(box) {
     <h2>⏰ Muddati o'tgan topshiriq uchun jarima</h2>
     <div class="card" id="taskPenaltiesCard"><div class="center-box"><div class="spinner"></div></div></div>
 
+    <h2>🚩 Guruh davomati — Kelmaganlik sabablari</h2>
+    <div class="card" id="absenceReasonsCard"><div class="center-box"><div class="spinner"></div></div></div>
+
     <h2>🧪 Sinov rejimi</h2>
     <div class="card">
       <p style="font-size:12px;color:var(--hint);margin:0 0 10px;">
@@ -7176,6 +7301,7 @@ async function renderSettingsTab(box) {
   await renderTaskCategoriesSettings(box.querySelector("#taskCategoriesCard"));
   await renderTaskProblemStatusesSettings(box.querySelector("#taskStatusesCard"));
   await renderTaskPenaltiesSettings(box.querySelector("#taskPenaltiesCard"));
+  await renderGroupAbsenceReasonsSettings(box.querySelector("#absenceReasonsCard"));
 
   box.querySelector("#saveGatesBtn").addEventListener("click", async () => {
     const msg = box.querySelector("#gatesMsg");

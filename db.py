@@ -654,10 +654,22 @@ def init_db():
         student_id INTEGER NOT NULL,
         lesson_date TEXT NOT NULL,
         status TEXT NOT NULL,
+        reason TEXT,
         updated_at TEXT,
         PRIMARY KEY (group_id, student_id, lesson_date)
     )
     """)
+    _add_column_if_missing("group_attendance", "reason", "TEXT")
+
+    # Davomat: "Kelmadi" deb belgilanganda tanlanadigan sabablar ro'yxati (CEO tomonidan boshqariladi)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_absence_reasons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        created_at TEXT
+    )
+    """)
+    _seed_default_absence_reasons()
 
     # Baholash — har bir o'quvchining har bir dars kunidagi bahosi
     cur.execute("""
@@ -1805,6 +1817,8 @@ DEFAULT_TASK_PROBLEM_STATUSES = [
     "Baholanmadi", "Qarzdor", "Yangi talaba qo'shildi", "Imtixon olinmadi", "Natijasi past",
 ]
 
+DEFAULT_ABSENCE_REASONS = ["Kasal", "Sababsiz", "Sababli ruxsat so'radi"]
+
 
 def _seed_default_task_categories():
     existing = _conn.execute("SELECT COUNT(*) AS c FROM task_categories").fetchone()["c"]
@@ -1861,6 +1875,34 @@ def add_task_problem_status(label: str):
 
 def delete_task_problem_status(status_id: int):
     _conn.execute("DELETE FROM task_problem_statuses WHERE id=?", (status_id,))
+    _conn.commit()
+
+
+def _seed_default_absence_reasons():
+    existing = _conn.execute("SELECT COUNT(*) AS c FROM group_absence_reasons").fetchone()["c"]
+    if existing == 0:
+        now = now_iso()
+        for label in DEFAULT_ABSENCE_REASONS:
+            _conn.execute(
+                "INSERT INTO group_absence_reasons (label, created_at) VALUES (?, ?)", (label, now)
+            )
+        _conn.commit()
+
+
+def list_absence_reasons():
+    return _conn.execute("SELECT * FROM group_absence_reasons ORDER BY created_at ASC").fetchall()
+
+
+def add_absence_reason(label: str):
+    _conn.execute(
+        "INSERT OR IGNORE INTO group_absence_reasons (label, created_at) VALUES (?, ?)",
+        (label, now_iso()),
+    )
+    _conn.commit()
+
+
+def delete_absence_reason(reason_id: int):
+    _conn.execute("DELETE FROM group_absence_reasons WHERE id=?", (reason_id,))
     _conn.commit()
 
 
@@ -2580,8 +2622,15 @@ def _pivot_list(table: str, group_id: int, dates: list):
     ).fetchall()
 
 
-def set_attendance(group_id: int, student_id: int, lesson_date: str, status: str):
-    _pivot_upsert("group_attendance", "status", group_id, student_id, lesson_date, status)
+def set_attendance(group_id: int, student_id: int, lesson_date: str, status: str, reason: str = None):
+    now = now_iso()
+    _conn.execute("""
+        INSERT INTO group_attendance (group_id, student_id, lesson_date, status, reason, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(group_id, student_id, lesson_date) DO UPDATE SET
+            status=excluded.status, reason=excluded.reason, updated_at=excluded.updated_at
+    """, (group_id, student_id, lesson_date, status, reason, now))
+    _conn.commit()
 
 
 def list_attendance(group_id: int, dates: list):

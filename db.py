@@ -11,6 +11,7 @@ import sqlite3
 import hashlib
 import hmac
 import threading
+import calendar
 from datetime import datetime, timezone, timedelta
 
 # Server (Railway) UTC vaqtida ishlaydi, lekin kompaniya Toshkentda joylashgan (UTC+5,
@@ -629,6 +630,119 @@ def init_db():
     )
     """)
     _add_column_if_missing("students", "group_id", "INTEGER")
+    _add_column_if_missing("students", "status", "TEXT")
+    _add_column_if_missing("student_groups", "course", "TEXT")
+    _add_column_if_missing("student_groups", "room", "TEXT")
+    _add_column_if_missing("student_groups", "price", "REAL")
+    _add_column_if_missing("student_groups", "start_date", "TEXT")
+    _add_column_if_missing("student_groups", "end_date", "TEXT")
+
+    # Guruh ichidagi kunlik dars ustuniga biriktirilgan Unit (Mashqlar bo'limi uchun)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_lesson_units (
+        group_id INTEGER NOT NULL,
+        lesson_date TEXT NOT NULL,
+        unit_name TEXT,
+        PRIMARY KEY (group_id, lesson_date)
+    )
+    """)
+
+    # Davomat — har bir o'quvchining har bir dars kunidagi holati
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_attendance (
+        group_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        lesson_date TEXT NOT NULL,
+        status TEXT NOT NULL,
+        updated_at TEXT,
+        PRIMARY KEY (group_id, student_id, lesson_date)
+    )
+    """)
+
+    # Baholash — har bir o'quvchining har bir dars kunidagi bahosi
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_grades (
+        group_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        lesson_date TEXT NOT NULL,
+        score REAL,
+        updated_at TEXT,
+        PRIMARY KEY (group_id, student_id, lesson_date)
+    )
+    """)
+
+    # Mashqlar — har bir o'quvchining har bir dars kunidagi (Unit) bajarilish foizi
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_exercise_scores (
+        group_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        lesson_date TEXT NOT NULL,
+        percent REAL,
+        updated_at TEXT,
+        PRIMARY KEY (group_id, student_id, lesson_date)
+    )
+    """)
+
+    # Chegirma — har bir o'quvchi uchun guruh ichida beriladigan chegirma
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_discounts (
+        group_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        discount_type TEXT NOT NULL DEFAULT 'percent',
+        value REAL NOT NULL DEFAULT 0,
+        reason TEXT,
+        updated_at TEXT,
+        PRIMARY KEY (group_id, student_id)
+    )
+    """)
+
+    # Imtihonlar — guruh uchun rejalashtirilgan imtihonlar
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_exams (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        exam_date TEXT,
+        passing_score REAL,
+        section TEXT,
+        total_score REAL,
+        created_at TEXT
+    )
+    """)
+
+    # Imtihon natijalari — har bir o'quvchining shu imtihondagi bali
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_exam_results (
+        exam_id INTEGER NOT NULL,
+        student_id INTEGER NOT NULL,
+        score REAL,
+        coins REAL,
+        updated_at TEXT,
+        PRIMARY KEY (exam_id, student_id)
+    )
+    """)
+
+    # Tarix — guruh ichida sodir bo'lgan muhim voqealar jurnali
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        event_text TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT
+    )
+    """)
+
+    # Izoh — guruh bo'yicha yozib qo'yiladigan eslatma/izohlar
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS group_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        teacher_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT
+    )
+    """)
 
     # Eski bazalarda yo'q bo'lishi mumkin bo'lgan ustunlar (xavfsiz migratsiya)
     _add_column_if_missing("tasks", "deadline", "TEXT")
@@ -2237,7 +2351,8 @@ def list_students_by_teacher(teacher_id: str):
 def update_student(student_id: int, full_name: str = None, age: int = None, gender: str = None,
                     parent_name: str = None, phone: str = None, phone2: str = None,
                     siblings_count: int = None, district: str = None, mahalla: str = None,
-                    school_number: str = None, class_grade: str = None, course: str = None):
+                    school_number: str = None, class_grade: str = None, course: str = None,
+                    status: str = None):
     fields, values = [], []
     if full_name is not None:
         fields.append("full_name=?"); values.append(full_name)
@@ -2263,6 +2378,8 @@ def update_student(student_id: int, full_name: str = None, age: int = None, gend
         fields.append("class_grade=?"); values.append(class_grade)
     if course is not None:
         fields.append("course=?"); values.append(course)
+    if status is not None:
+        fields.append("status=?"); values.append(status)
 
     if not fields:
         return
@@ -2289,13 +2406,16 @@ def set_student_group(student_id: int, group_id):
 # ---------- O'QITUVCHINING SHAXSIY GURUHLARI ----------
 
 def add_group(teacher_id: str, name: str, lesson_days: str = None, start_time: str = None,
-              end_time: str = None, day_period: str = None):
+              end_time: str = None, day_period: str = None, course: str = None, room: str = None,
+              price: float = None, start_date: str = None, end_date: str = None):
     now = now_iso()
     _conn.execute("""
         INSERT INTO student_groups (teacher_id, name, lesson_days, start_time, end_time, day_period,
+                                     course, room, price, start_date, end_date,
                                      active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-    """, (teacher_id, name, lesson_days, start_time, end_time, day_period, now, now))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    """, (teacher_id, name, lesson_days, start_time, end_time, day_period,
+          course, room, price, start_date, end_date, now, now))
     _conn.commit()
     return _conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
@@ -2312,7 +2432,8 @@ def list_groups_by_teacher(teacher_id: str):
 
 
 def update_group(group_id: int, name: str = None, lesson_days: str = None, start_time: str = None,
-                  end_time: str = None, day_period: str = None):
+                  end_time: str = None, day_period: str = None, course: str = None, room: str = None,
+                  price: float = None, start_date: str = None, end_date: str = None):
     fields, values = [], []
     if name is not None:
         fields.append("name=?"); values.append(name)
@@ -2324,6 +2445,16 @@ def update_group(group_id: int, name: str = None, lesson_days: str = None, start
         fields.append("end_time=?"); values.append(end_time)
     if day_period is not None:
         fields.append("day_period=?"); values.append(day_period)
+    if course is not None:
+        fields.append("course=?"); values.append(course)
+    if room is not None:
+        fields.append("room=?"); values.append(room)
+    if price is not None:
+        fields.append("price=?"); values.append(price)
+    if start_date is not None:
+        fields.append("start_date=?"); values.append(start_date)
+    if end_date is not None:
+        fields.append("end_date=?"); values.append(end_date)
 
     if not fields:
         return
@@ -2374,3 +2505,223 @@ def assign_students_to_group(teacher_id: str, group_id: int, student_ids: list):
         [group_id, now, teacher_id] + list(student_ids)
     )
     _conn.commit()
+
+
+# ---------- GURUH ICHI: dars sanalari (lesson_days'dan hisoblanadi, saqlanmaydi) ----------
+
+_WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def compute_lesson_dates(lesson_days: str, year: int, month: int, start_date: str = None, end_date: str = None):
+    """Berilgan oy ichida, guruhning dars kunlari (mon/tue/...) shabloniga mos keladigan
+    barcha sanalarni hisoblaydi — alohida jadvalda saqlanmaydi, har doim shu yerdan olinadi."""
+    keys = set(k for k in (lesson_days or "").split(",") if k)
+    if not keys:
+        return []
+    days_in_month = calendar.monthrange(year, month)[1]
+    out = []
+    for day in range(1, days_in_month + 1):
+        d = datetime(year, month, day)
+        if _WEEKDAY_KEYS[d.weekday()] not in keys:
+            continue
+        d_str = d.strftime("%Y-%m-%d")
+        if start_date and d_str < start_date:
+            continue
+        if end_date and d_str > end_date:
+            continue
+        out.append(d_str)
+    return out
+
+
+def count_lessons_held(group) -> int:
+    """'O'tilgan darslar' — guruh boshlangan kundan bugungacha (yoki tugash sanasigacha,
+    qaysi biri oldinroq bo'lsa) o'tgan dars kunlari soni."""
+    keys = set(k for k in (group["lesson_days"] or "").split(",") if k)
+    if not keys or not group["start_date"]:
+        return 0
+    start = datetime.strptime(group["start_date"], "%Y-%m-%d")
+    end_bound = tashkent_now().replace(tzinfo=None, hour=0, minute=0, second=0, microsecond=0)
+    if group["end_date"]:
+        end_limit = datetime.strptime(group["end_date"], "%Y-%m-%d")
+        if end_limit < end_bound:
+            end_bound = end_limit
+    if end_bound < start:
+        return 0
+    count = 0
+    d = start
+    while d <= end_bound:
+        if _WEEKDAY_KEYS[d.weekday()] in keys:
+            count += 1
+        d += timedelta(days=1)
+    return count
+
+
+# ---------- GURUH ICHI: umumiy "pivot" jadval yordamchilari ----------
+# Davomat, Baholash va Mashqlar bir xil shaklga ega: (guruh, o'quvchi, dars sanasi) -> qiymat
+
+def _pivot_upsert(table: str, value_col: str, group_id: int, student_id: int, lesson_date: str, value):
+    now = now_iso()
+    _conn.execute(f"""
+        INSERT INTO {table} (group_id, student_id, lesson_date, {value_col}, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(group_id, student_id, lesson_date) DO UPDATE SET
+            {value_col}=excluded.{value_col}, updated_at=excluded.updated_at
+    """, (group_id, student_id, lesson_date, value, now))
+    _conn.commit()
+
+
+def _pivot_list(table: str, group_id: int, dates: list):
+    if not dates:
+        return []
+    placeholders = ",".join("?" for _ in dates)
+    return _conn.execute(
+        f"SELECT * FROM {table} WHERE group_id=? AND lesson_date IN ({placeholders})",
+        [group_id] + list(dates)
+    ).fetchall()
+
+
+def set_attendance(group_id: int, student_id: int, lesson_date: str, status: str):
+    _pivot_upsert("group_attendance", "status", group_id, student_id, lesson_date, status)
+
+
+def list_attendance(group_id: int, dates: list):
+    return _pivot_list("group_attendance", group_id, dates)
+
+
+def set_grade(group_id: int, student_id: int, lesson_date: str, score):
+    _pivot_upsert("group_grades", "score", group_id, student_id, lesson_date, score)
+
+
+def list_grades(group_id: int, dates: list):
+    return _pivot_list("group_grades", group_id, dates)
+
+
+def list_all_grades_for_group(group_id: int):
+    return _conn.execute("SELECT * FROM group_grades WHERE group_id=?", (group_id,)).fetchall()
+
+
+def set_exercise_score(group_id: int, student_id: int, lesson_date: str, percent):
+    _pivot_upsert("group_exercise_scores", "percent", group_id, student_id, lesson_date, percent)
+
+
+def list_exercise_scores(group_id: int, dates: list):
+    return _pivot_list("group_exercise_scores", group_id, dates)
+
+
+# ---------- GURUH ICHI: dars kuniga biriktirilgan Unit (Mashqlar) ----------
+
+def set_lesson_unit(group_id: int, lesson_date: str, unit_name: str):
+    if unit_name:
+        _conn.execute("""
+            INSERT INTO group_lesson_units (group_id, lesson_date, unit_name) VALUES (?, ?, ?)
+            ON CONFLICT(group_id, lesson_date) DO UPDATE SET unit_name=excluded.unit_name
+        """, (group_id, lesson_date, unit_name))
+    else:
+        _conn.execute(
+            "DELETE FROM group_lesson_units WHERE group_id=? AND lesson_date=?", (group_id, lesson_date)
+        )
+    _conn.commit()
+
+
+def list_lesson_units(group_id: int, dates: list):
+    if not dates:
+        return []
+    placeholders = ",".join("?" for _ in dates)
+    return _conn.execute(
+        f"SELECT * FROM group_lesson_units WHERE group_id=? AND lesson_date IN ({placeholders})",
+        [group_id] + list(dates)
+    ).fetchall()
+
+
+# ---------- GURUH ICHI: Chegirma ----------
+
+def set_discount(group_id: int, student_id: int, discount_type: str, value: float, reason: str = None):
+    now = now_iso()
+    _conn.execute("""
+        INSERT INTO group_discounts (group_id, student_id, discount_type, value, reason, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(group_id, student_id) DO UPDATE SET
+            discount_type=excluded.discount_type, value=excluded.value, reason=excluded.reason,
+            updated_at=excluded.updated_at
+    """, (group_id, student_id, discount_type, value, reason, now))
+    _conn.commit()
+
+
+def list_discounts(group_id: int):
+    return _conn.execute("SELECT * FROM group_discounts WHERE group_id=?", (group_id,)).fetchall()
+
+
+# ---------- GURUH ICHI: Imtihonlar ----------
+
+def add_exam(group_id: int, name: str, exam_date: str = None, passing_score: float = None,
+             section: str = None, total_score: float = None):
+    now = now_iso()
+    _conn.execute("""
+        INSERT INTO group_exams (group_id, name, exam_date, passing_score, section, total_score, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (group_id, name, exam_date, passing_score, section, total_score, now))
+    _conn.commit()
+    return _conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+
+def list_exams(group_id: int):
+    return _conn.execute(
+        "SELECT * FROM group_exams WHERE group_id=? ORDER BY exam_date DESC, id DESC", (group_id,)
+    ).fetchall()
+
+
+def get_exam(exam_id: int):
+    return _conn.execute("SELECT * FROM group_exams WHERE id=?", (exam_id,)).fetchone()
+
+
+def delete_exam(exam_id: int):
+    _conn.execute("DELETE FROM group_exams WHERE id=?", (exam_id,))
+    _conn.execute("DELETE FROM group_exam_results WHERE exam_id=?", (exam_id,))
+    _conn.commit()
+
+
+def set_exam_result(exam_id: int, student_id: int, score=None, coins=None):
+    now = now_iso()
+    _conn.execute("""
+        INSERT INTO group_exam_results (exam_id, student_id, score, coins, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(exam_id, student_id) DO UPDATE SET
+            score=excluded.score, coins=excluded.coins, updated_at=excluded.updated_at
+    """, (exam_id, student_id, score, coins, now))
+    _conn.commit()
+
+
+def list_exam_results(exam_id: int):
+    return _conn.execute("SELECT * FROM group_exam_results WHERE exam_id=?", (exam_id,)).fetchall()
+
+
+# ---------- GURUH ICHI: Tarix ----------
+
+def add_group_history(group_id: int, event_text: str, created_by: str = None):
+    _conn.execute(
+        "INSERT INTO group_history (group_id, event_text, created_by, created_at) VALUES (?, ?, ?, ?)",
+        (group_id, event_text, created_by, now_iso())
+    )
+    _conn.commit()
+
+
+def list_group_history(group_id: int, limit: int = 100):
+    return _conn.execute(
+        "SELECT * FROM group_history WHERE group_id=? ORDER BY id DESC LIMIT ?", (group_id, limit)
+    ).fetchall()
+
+
+# ---------- GURUH ICHI: Izoh ----------
+
+def add_group_comment(group_id: int, teacher_id: str, text: str):
+    _conn.execute(
+        "INSERT INTO group_comments (group_id, teacher_id, text, created_at) VALUES (?, ?, ?, ?)",
+        (group_id, teacher_id, text, now_iso())
+    )
+    _conn.commit()
+
+
+def list_group_comments(group_id: int):
+    return _conn.execute(
+        "SELECT * FROM group_comments WHERE group_id=? ORDER BY id ASC", (group_id,)
+    ).fetchall()

@@ -2189,6 +2189,15 @@ function _groupFormHtml(g) {
       <label>Guruh nomi</label>
       <input id="gf_name" type="text" placeholder="masalan: Beginner-A" value="${_studentAttr(g.name)}" />
 
+      <label>Kurs</label>
+      <input id="gf_course" type="text" placeholder="masalan: KIDS 1" value="${_studentAttr(g.course)}" />
+
+      <label>Xona</label>
+      <input id="gf_room" type="text" placeholder="masalan: Akvarium 5-room" value="${_studentAttr(g.room)}" />
+
+      <label>Narx (so'm)</label>
+      <input id="gf_price" type="number" min="0" step="1000" placeholder="masalan: 299000" value="${_studentAttr(g.price)}" />
+
       <label>Dars kunlari</label>
       <div class="weekday-grid">
         ${WEEKDAYS.map((w) => `
@@ -2211,6 +2220,12 @@ function _groupFormHtml(g) {
         <option value="Ertalab" ${dp === "Ertalab" ? "selected" : ""}>🌅 Ertalab</option>
         <option value="Tushlikdan keyin" ${dp === "Tushlikdan keyin" ? "selected" : ""}>🌇 Tushlikdan keyin</option>
       </select>
+
+      <label>Boshlanish sanasi</label>
+      <input id="gf_start_date" type="date" value="${_studentAttr(g.start_date)}" />
+
+      <label>Tugash sanasi</label>
+      <input id="gf_end_date" type="date" value="${_studentAttr(g.end_date)}" />
     </div>
   `;
 }
@@ -2227,12 +2242,18 @@ function _wireGroupForm(box) {
 function _readGroupForm(box) {
   const name = box.querySelector("#gf_name").value.trim();
   const lesson_days = Array.from(box.querySelectorAll(".weekday-chip input:checked")).map((cb) => cb.value);
+  const priceVal = box.querySelector("#gf_price").value.trim();
   return {
     name,
     lesson_days,
+    course: box.querySelector("#gf_course").value.trim() || null,
+    room: box.querySelector("#gf_room").value.trim() || null,
+    price: priceVal === "" ? null : Number(priceVal),
     start_time: box.querySelector("#gf_start_time").value || null,
     end_time: box.querySelector("#gf_end_time").value || null,
     day_period: box.querySelector("#gf_day_period").value || null,
+    start_date: box.querySelector("#gf_start_date").value || null,
+    end_date: box.querySelector("#gf_end_date").value || null,
   };
 }
 
@@ -2272,6 +2293,35 @@ function renderGroupAddForm(box) {
   });
 }
 
+const MONTH_LABELS = ["Yan", "Fev", "Mar", "Apr", "May", "Iyun", "Iyul", "Avg", "Sen", "Okt", "Noy", "Dek"];
+
+function _shortDate(dateStr) {
+  const [, m, d] = dateStr.split("-");
+  return `${d} ${MONTH_LABELS[Number(m) - 1].toLowerCase()}`;
+}
+
+function _monthNavHtml(idPrefix, year, month) {
+  const curY = new Date().getFullYear();
+  const years = [curY - 1, curY, curY + 1];
+  return `
+    <div class="month-picker" style="margin-bottom:14px;align-items:stretch;">
+      <select id="${idPrefix}Year" style="width:auto;margin-bottom:0;">
+        ${years.map((y) => `<option value="${y}" ${y === year ? "selected" : ""}>${y}</option>`).join("")}
+      </select>
+      <div class="tabs" style="margin-bottom:0;flex:1;">
+        ${MONTH_LABELS.map((label, i) => `<div class="tab ${i + 1 === month ? "active" : ""}" data-month="${i + 1}">${label}</div>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+const STUDENT_STATUS_OPTIONS = [
+  { v: "faol", label: "🟢 Faol" },
+  { v: "qarzdor", label: "🔴 Qarzdor" },
+  { v: "sinov", label: "🔵 Sinov darsida" },
+  { v: "muzlatilgan", label: "🟡 Muzlatilgan" },
+];
+
 async function renderGroupDetail(box, groupId) {
   box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
   let g;
@@ -2282,86 +2332,61 @@ async function renderGroupDetail(box, groupId) {
     return;
   }
 
-  const studentsHtml = g.students.length
-    ? g.students.map((s) => `
-        <div class="student-row" data-id="${s.id}">
-          <div class="student-avatar">${_studentInitials(s.full_name)}</div>
-          <div class="student-row-main">
-            <div class="student-row-name">${s.full_name}</div>
-            <div class="student-row-meta">${_studentGenderIcon(s.gender)}${s.age ? ` ${s.age} yosh` : ""}</div>
-          </div>
-          <button class="mini-btn" data-unassign="${s.id}" title="Guruhdan chiqarish">🗑️</button>
-        </div>
-      `).join("")
-    : `<div class="students-empty">
-        <div class="students-empty-icon">🎒</div>
-        <div class="students-empty-text">Hali o'quvchi biriktirilmagan</div>
-      </div>`;
-
   box.innerHTML = `
     <button class="back-btn" id="groupDetailBackBtn">← Ro'yxatga qaytish</button>
-    <div class="teacher-hero" style="padding-top:4px;">
-      <div class="student-detail-avatar">👥</div>
-      <h1 style="margin-bottom:2px;">${g.name}</h1>
-      <div class="teacher-sub">${_groupScheduleSummary(g)}</div>
+
+    <div class="card group-info-card">
+      <div class="group-info-head">
+        <div>
+          <h1 style="margin:0 0 2px;">${g.name}</h1>
+          <div class="teacher-sub">${_groupScheduleSummary(g)}</div>
+        </div>
+        <button class="mini-btn" id="editGroupInfoBtn">✏️ Tahrirlash</button>
+      </div>
+      <div class="row"><span class="label">O'qituvchi</span><span class="value">${g.teacher_name}</span></div>
+      <div class="row"><span class="label">Narx</span><span class="value">${g.price ? fmt(g.price) : "-"}</span></div>
+      <div class="row"><span class="label">Vaqt</span><span class="value">${g.start_time && g.end_time ? `${g.start_time} - ${g.end_time}` : "-"}</span></div>
+      <div class="row"><span class="label">Kurs</span><span class="value">${g.course || "-"}</span></div>
+      <div class="row"><span class="label">Boshlanish sanasi</span><span class="value">${g.start_date || "-"}</span></div>
+      <div class="row"><span class="label">Tugash sanasi</span><span class="value">${g.end_date || "-"}</span></div>
+      <div class="row"><span class="label">Xona</span><span class="value">${g.room || "-"}</span></div>
+      <div class="row"><span class="label">O'tilgan darslar</span><span class="value">${g.lessons_held}</span></div>
+      <div id="groupEditFormWrap" style="display:none;margin-top:12px;"></div>
     </div>
 
-    ${_groupFormHtml(g)}
-    <button class="primary" id="saveGroupDetailBtn">✅ O'zgarishlarni saqlash</button>
-    <div id="groupDetailMsg" style="margin-top:8px;font-size:13px;"></div>
+    <div class="card roster-card">
+      <div class="roster-legend">
+        <span><span class="status-dot status-faol"></span>faol</span>
+        <span><span class="status-dot status-qarzdor"></span>qarzdorlar</span>
+        <span><span class="status-dot status-sinov"></span>sinov darsida</span>
+        <span><span class="status-dot status-muzlatilgan"></span>muzlatilgan</span>
+      </div>
+      <div id="rosterList"></div>
+      <button class="secondary" id="assignStudentsBtn">➕ O'quvchi biriktirish</button>
+    </div>
 
-    <h2>🎒 Biriktirilgan o'quvchilar (${g.students.length})</h2>
-    <button class="secondary" id="assignStudentsBtn">➕ O'quvchi biriktirish</button>
-    <div class="student-list">${studentsHtml}</div>
+    <div class="tabs" id="groupTabs">
+      <div class="tab active" data-tab="attendance">Davomat</div>
+      <div class="tab" data-tab="grades">Baholash</div>
+      <div class="tab" data-tab="exercises">Mashqlar</div>
+      <div class="tab" data-tab="discounts">Chegirma</div>
+      <div class="tab" data-tab="rating">Reyting</div>
+      <div class="tab" data-tab="exams">Imtihonlar</div>
+      <div class="tab" data-tab="history">Tarix</div>
+      <div class="tab" data-tab="comments">Izoh</div>
+    </div>
+    <div id="groupTabContent"><div class="center-box"><div class="spinner"></div></div></div>
 
     <h2>Guruhni boshqarish</h2>
     <button class="secondary" id="deleteGroupBtn">🗑️ Guruhni o'chirish</button>
   `;
 
   box.querySelector("#groupDetailBackBtn").addEventListener("click", () => renderMyGroupsSection(box));
-  _wireGroupForm(box);
 
-  box.querySelector("#saveGroupDetailBtn").addEventListener("click", async () => {
-    const msg = box.querySelector("#groupDetailMsg");
-    const data = _readGroupForm(box);
-    if (!data.name) {
-      msg.innerHTML = `<span class="badge warn">❌ Guruh nomi to'ldirilishi shart</span>`;
-      return;
-    }
-    const btn = box.querySelector("#saveGroupDetailBtn");
-    btn.disabled = true;
-    try {
-      await api(`/api/my-groups/${groupId}`, { method: "PATCH", body: JSON.stringify(data) });
-      showToast("✅ Saqlandi");
-      renderGroupDetail(box, groupId);
-    } catch (err) {
-      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
-      btn.disabled = false;
-    }
-  });
+  _renderRoster(box, g);
 
-  box.querySelector("#assignStudentsBtn").addEventListener("click", () => {
-    renderGroupAssignStudents(box, groupId);
-  });
-
-  box.querySelectorAll("[data-unassign]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const studentId = Number(btn.dataset.unassign);
-      showConfirm(
-        "O'quvchini guruhdan chiqarish",
-        "Bu o'quvchi guruhdan chiqarilsinmi? U guruhsiz holatga qaytadi.",
-        async () => {
-          try {
-            await api(`/api/my-students/${studentId}/group`, { method: "PATCH", body: JSON.stringify({ group_id: null }) });
-            showToast("✅ Guruhdan chiqarildi");
-            renderGroupDetail(box, groupId);
-          } catch (err) {
-            safeAlert("Xato: " + err.message);
-          }
-        }
-      );
-    });
-  });
+  box.querySelector("#editGroupInfoBtn").addEventListener("click", () => _toggleGroupEditForm(box, g, groupId));
+  box.querySelector("#assignStudentsBtn").addEventListener("click", () => renderGroupAssignStudents(box, groupId));
 
   box.querySelector("#deleteGroupBtn").addEventListener("click", () => {
     showConfirm(
@@ -2378,6 +2403,715 @@ async function renderGroupDetail(box, groupId) {
       }
     );
   });
+
+  const tabContent = box.querySelector("#groupTabContent");
+  function switchTab(tab) {
+    box.querySelectorAll("#groupTabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tab));
+    _renderGroupTab(tabContent, g, groupId, tab);
+  }
+  box.querySelectorAll("#groupTabs .tab").forEach((t) => {
+    t.addEventListener("click", () => switchTab(t.dataset.tab));
+  });
+  switchTab("attendance");
+}
+
+function _renderRoster(box, g) {
+  const listEl = box.querySelector("#rosterList");
+  if (!g.students.length) {
+    listEl.innerHTML = `<div class="students-empty">
+      <div class="students-empty-icon">🎒</div>
+      <div class="students-empty-text">Hali o'quvchi biriktirilmagan</div>
+    </div>`;
+    return;
+  }
+  listEl.innerHTML = g.students.map((s, i) => `
+    <div class="roster-row">
+      <span class="status-dot status-${s.status || "faol"}"></span>
+      <span class="roster-num">${i + 1}</span>
+      <span class="roster-name">${s.full_name}</span>
+      <span class="roster-phone">${s.phone || ""}</span>
+      <button class="mini-btn" data-roster-menu="${s.id}">⋮</button>
+    </div>
+  `).join("");
+
+  listEl.querySelectorAll("[data-roster-menu]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const student = g.students.find((s) => s.id === Number(btn.dataset.rosterMenu));
+      _showRosterActionModal(box, g, student);
+    });
+  });
+}
+
+function _showRosterActionModal(box, g, student) {
+  const overlay = el(`
+    <div class="modal-overlay">
+      <div class="modal-box">
+        <h3>${student.full_name}</h3>
+        <div class="modal-message">
+          <label>Holati</label>
+          <select id="rosterStatusSelect">
+            ${STUDENT_STATUS_OPTIONS.map((o) => `<option value="${o.v}" ${(student.status || "faol") === o.v ? "selected" : ""}>${o.label}</option>`).join("")}
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary" id="modalCancel">Yopish</button>
+          <button class="primary" id="modalSaveStatus">Saqlash</button>
+        </div>
+        <button class="secondary" id="modalRemoveFromGroup" style="margin-top:8px;">🗑️ Guruhdan chiqarish</button>
+      </div>
+    </div>
+  `);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#modalCancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#modalSaveStatus").addEventListener("click", async () => {
+    const status = overlay.querySelector("#rosterStatusSelect").value;
+    try {
+      await api(`/api/my-students/${student.id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
+      overlay.remove();
+      showToast("✅ Holat yangilandi");
+      renderGroupDetail(box, g.id);
+    } catch (err) {
+      safeAlert("Xato: " + err.message);
+    }
+  });
+  overlay.querySelector("#modalRemoveFromGroup").addEventListener("click", () => {
+    overlay.remove();
+    showConfirm("Guruhdan chiqarish", `<b>${student.full_name}</b> guruhdan chiqarilsinmi?`, async () => {
+      try {
+        await api(`/api/my-students/${student.id}/group`, { method: "PATCH", body: JSON.stringify({ group_id: null }) });
+        showToast("✅ Guruhdan chiqarildi");
+        renderGroupDetail(box, g.id);
+      } catch (err) {
+        safeAlert("Xato: " + err.message);
+      }
+    });
+  });
+}
+
+function _toggleGroupEditForm(box, g, groupId) {
+  const wrap = box.querySelector("#groupEditFormWrap");
+  if (wrap.style.display === "block") {
+    wrap.style.display = "none";
+    wrap.innerHTML = "";
+    return;
+  }
+  wrap.style.display = "block";
+  wrap.innerHTML = `
+    ${_groupFormHtml(g)}
+    <button class="primary" id="saveGroupInfoBtn">✅ Saqlash</button>
+    <div id="groupInfoMsg" style="margin-top:8px;font-size:13px;"></div>
+  `;
+  _wireGroupForm(wrap);
+  wrap.querySelector("#saveGroupInfoBtn").addEventListener("click", async () => {
+    const data = _readGroupForm(wrap);
+    const msg = wrap.querySelector("#groupInfoMsg");
+    if (!data.name) {
+      msg.innerHTML = `<span class="badge warn">❌ Guruh nomi to'ldirilishi shart</span>`;
+      return;
+    }
+    try {
+      await api(`/api/my-groups/${groupId}`, { method: "PATCH", body: JSON.stringify(data) });
+      showToast("✅ Saqlandi");
+      renderGroupDetail(box, groupId);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+    }
+  });
+}
+
+function _renderGroupTab(tabContent, g, groupId, tab) {
+  if (tab === "attendance") _renderAttendanceTab(tabContent, g, groupId);
+  else if (tab === "grades") _renderGradesTab(tabContent, g, groupId);
+  else if (tab === "exercises") _renderExercisesTab(tabContent, g, groupId);
+  else if (tab === "discounts") _renderDiscountsTab(tabContent, g, groupId);
+  else if (tab === "rating") _renderRatingTab(tabContent, g, groupId);
+  else if (tab === "exams") _renderExamsTab(tabContent, g, groupId);
+  else if (tab === "history") _renderHistoryTab(tabContent, g, groupId);
+  else if (tab === "comments") _renderCommentsTab(tabContent, g, groupId);
+}
+
+const ATTENDANCE_CYCLE = ["present", "absent", "excused", "late"];
+const ATTENDANCE_ICON = { present: "✅", absent: "⬜", excused: "🟡", late: "🟠" };
+
+async function _renderAttendanceTab(box, g, groupId) {
+  const now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth() + 1;
+
+  async function load() {
+    box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    let data;
+    try {
+      data = await api(`/api/my-groups/${groupId}/attendance?year=${year}&month=${month}`);
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+      return;
+    }
+    renderTable(data);
+  }
+
+  function renderTable(data) {
+    const dates = data.dates;
+    const rows = g.students.map((s) => `
+      <tr>
+        <td class="pivot-name-cell">${s.full_name}</td>
+        ${dates.map((d) => {
+          const status = (data.values[s.id] || {})[d];
+          return `<td><button class="pivot-cell" data-student="${s.id}" data-date="${d}">${status ? ATTENDANCE_ICON[status] || "" : ""}</button></td>`;
+        }).join("")}
+      </tr>
+    `).join("");
+
+    box.innerHTML = dates.length ? `
+      ${_monthNavHtml("att", year, month)}
+      <div class="card pivot-table-wrap">
+        <table class="pivot-table">
+          <thead><tr><th>Talabalar</th>${dates.map((d) => `<th>${_shortDate(d)}</th>`).join("")}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="legend-row">
+        <div class="legend-item">✅ Keldi</div>
+        <div class="legend-item">⬜ Kelmadi</div>
+        <div class="legend-item">🟡 Sababli</div>
+        <div class="legend-item">🟠 Kech qoldi</div>
+      </div>
+    ` : `${_monthNavHtml("att", year, month)}<div class="students-empty"><div class="students-empty-icon">📅</div><div class="students-empty-text">Bu oyda dars kuni yo'q</div></div>`;
+
+    wireMonthNav();
+
+    box.querySelectorAll(".pivot-cell").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const studentId = Number(btn.dataset.student);
+        const date = btn.dataset.date;
+        const current = (data.values[studentId] || {})[date];
+        const idx = current ? ATTENDANCE_CYCLE.indexOf(current) : -1;
+        const next = ATTENDANCE_CYCLE[(idx + 1) % ATTENDANCE_CYCLE.length];
+        btn.textContent = ATTENDANCE_ICON[next];
+        try {
+          await api(`/api/my-groups/${groupId}/attendance`, {
+            method: "POST",
+            body: JSON.stringify({ student_id: studentId, lesson_date: date, status: next }),
+          });
+          data.values[studentId] = data.values[studentId] || {};
+          data.values[studentId][date] = next;
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      });
+    });
+  }
+
+  function wireMonthNav() {
+    box.querySelector(`#attYear`).addEventListener("change", (e) => { year = Number(e.target.value); load(); });
+    box.querySelectorAll("[data-month]").forEach((m) => {
+      m.addEventListener("click", () => { month = Number(m.dataset.month); load(); });
+    });
+  }
+
+  load();
+}
+
+async function _renderGradesTab(box, g, groupId) {
+  const now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth() + 1;
+
+  async function load() {
+    box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    let data;
+    try {
+      data = await api(`/api/my-groups/${groupId}/grades?year=${year}&month=${month}`);
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+      return;
+    }
+    renderTable(data);
+  }
+
+  function renderTable(data) {
+    const dates = data.dates;
+    const rows = g.students.map((s) => `
+      <tr>
+        <td class="pivot-name-cell">${s.full_name}</td>
+        ${dates.map((d) => {
+          const val = (data.values[s.id] || {})[d];
+          return `<td><input class="pivot-input" type="number" min="0" max="5" step="0.5" data-student="${s.id}" data-date="${d}" value="${val !== undefined && val !== null ? val : ""}" /></td>`;
+        }).join("")}
+      </tr>
+    `).join("");
+
+    box.innerHTML = dates.length ? `
+      ${_monthNavHtml("grd", year, month)}
+      <div class="card pivot-table-wrap">
+        <table class="pivot-table">
+          <thead><tr><th>Talabalar</th>${dates.map((d) => `<th>${_shortDate(d)}</th>`).join("")}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    ` : `${_monthNavHtml("grd", year, month)}<div class="students-empty"><div class="students-empty-icon">📅</div><div class="students-empty-text">Bu oyda dars kuni yo'q</div></div>`;
+
+    box.querySelector(`#grdYear`).addEventListener("change", (e) => { year = Number(e.target.value); load(); });
+    box.querySelectorAll("[data-month]").forEach((m) => m.addEventListener("click", () => { month = Number(m.dataset.month); load(); }));
+
+    box.querySelectorAll(".pivot-input").forEach((input) => {
+      input.addEventListener("change", async () => {
+        const studentId = Number(input.dataset.student);
+        const date = input.dataset.date;
+        const v = input.value === "" ? null : Number(input.value);
+        try {
+          await api(`/api/my-groups/${groupId}/grades`, {
+            method: "POST",
+            body: JSON.stringify({ student_id: studentId, lesson_date: date, score: v }),
+          });
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      });
+    });
+  }
+
+  load();
+}
+
+async function _renderExercisesTab(box, g, groupId) {
+  const now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth() + 1;
+
+  async function load() {
+    box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    let data;
+    try {
+      data = await api(`/api/my-groups/${groupId}/exercises?year=${year}&month=${month}`);
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+      return;
+    }
+    renderTable(data);
+  }
+
+  function renderTable(data) {
+    const dates = data.dates;
+    const rows = g.students.map((s) => `
+      <tr>
+        <td class="pivot-name-cell">${s.full_name}</td>
+        ${dates.map((d) => {
+          const val = (data.values[s.id] || {})[d];
+          return `<td><input class="pivot-input" type="number" min="0" max="100" step="5" data-student="${s.id}" data-date="${d}" value="${val !== undefined && val !== null ? val : ""}" placeholder="%" /></td>`;
+        }).join("")}
+      </tr>
+    `).join("");
+
+    box.innerHTML = dates.length ? `
+      ${_monthNavHtml("exr", year, month)}
+      <div class="card pivot-table-wrap">
+        <table class="pivot-table">
+          <thead>
+            <tr><th>Talabalar</th>${dates.map((d) => `<th>${_shortDate(d)}</th>`).join("")}</tr>
+            <tr class="pivot-unit-row"><th>Unit</th>${dates.map((d) => `<th><input class="pivot-unit-input" type="text" data-date="${d}" value="${data.units[d] || ""}" placeholder="-" /></th>`).join("")}</tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    ` : `${_monthNavHtml("exr", year, month)}<div class="students-empty"><div class="students-empty-icon">📅</div><div class="students-empty-text">Bu oyda dars kuni yo'q</div></div>`;
+
+    box.querySelector(`#exrYear`).addEventListener("change", (e) => { year = Number(e.target.value); load(); });
+    box.querySelectorAll("[data-month]").forEach((m) => m.addEventListener("click", () => { month = Number(m.dataset.month); load(); }));
+
+    box.querySelectorAll(".pivot-unit-input").forEach((input) => {
+      input.addEventListener("change", async () => {
+        try {
+          await api(`/api/my-groups/${groupId}/exercises/unit`, {
+            method: "POST",
+            body: JSON.stringify({ lesson_date: input.dataset.date, unit_name: input.value.trim() || null }),
+          });
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      });
+    });
+
+    box.querySelectorAll(".pivot-input").forEach((input) => {
+      input.addEventListener("change", async () => {
+        const studentId = Number(input.dataset.student);
+        const date = input.dataset.date;
+        const v = input.value === "" ? null : Number(input.value);
+        try {
+          await api(`/api/my-groups/${groupId}/exercises`, {
+            method: "POST",
+            body: JSON.stringify({ student_id: studentId, lesson_date: date, percent: v }),
+          });
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      });
+    });
+  }
+
+  load();
+}
+
+async function _renderDiscountsTab(box, g, groupId) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let discounts;
+  try {
+    discounts = await api(`/api/my-groups/${groupId}/discounts`);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+
+  box.innerHTML = discounts.length ? `
+    <div class="card" style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>O'quvchi</th><th>Turi</th><th>Qiymati</th><th>Sababi</th><th></th></tr></thead>
+        <tbody>
+          ${discounts.map((d) => `
+            <tr>
+              <td>${d.full_name}</td>
+              <td>
+                <select class="dsc-type" data-student="${d.student_id}">
+                  <option value="percent" ${d.discount_type === "percent" ? "selected" : ""}>%</option>
+                  <option value="amount" ${d.discount_type === "amount" ? "selected" : ""}>so'm</option>
+                </select>
+              </td>
+              <td><input class="dsc-value" type="number" min="0" data-student="${d.student_id}" value="${d.value || 0}" /></td>
+              <td><input class="dsc-reason" type="text" data-student="${d.student_id}" value="${_studentAttr(d.reason)}" placeholder="sababi" /></td>
+              <td><button class="mini-btn" data-save-discount="${d.student_id}">💾</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  ` : `<div class="students-empty"><div class="students-empty-icon">🎒</div><div class="students-empty-text">Guruhda o'quvchi yo'q</div></div>`;
+
+  box.querySelectorAll("[data-save-discount]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const studentId = Number(btn.dataset.saveDiscount);
+      const type = box.querySelector(`.dsc-type[data-student="${studentId}"]`).value;
+      const value = Number(box.querySelector(`.dsc-value[data-student="${studentId}"]`).value || 0);
+      const reason = box.querySelector(`.dsc-reason[data-student="${studentId}"]`).value.trim() || null;
+      try {
+        await api(`/api/my-groups/${groupId}/discounts`, {
+          method: "POST",
+          body: JSON.stringify({ student_id: studentId, discount_type: type, value, reason }),
+        });
+        showToast("✅ Saqlandi");
+      } catch (err) {
+        safeAlert("Xato: " + err.message);
+      }
+    });
+  });
+}
+
+const RANK_MEDALS = ["🏆", "🥈", "🥉"];
+
+async function _renderRatingTab(box, g, groupId) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  const now = new Date();
+  let mode = "avg";
+  const monthFilter = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
+  async function load() {
+    let results;
+    try {
+      results = await api(`/api/my-groups/${groupId}/rating?mode=${mode}&month=${monthFilter}`);
+    } catch (err) {
+      box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+      return;
+    }
+    render(results);
+  }
+
+  function render(results) {
+    box.innerHTML = results.length ? `
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
+        <label style="display:flex;align-items:center;gap:6px;margin:0;">
+          <input type="radio" name="ratingMode" value="avg" ${mode === "avg" ? "checked" : ""} style="width:auto;margin:0;" /> O'rtacha bal
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;">
+          <input type="radio" name="ratingMode" value="total" ${mode === "total" ? "checked" : ""} style="width:auto;margin:0;" /> Umumiy bal
+        </label>
+      </div>
+      <div class="rank-list">
+        ${results.map((r, i) => `
+          <div class="rank-item ${i < 3 ? "rank-top" : ""}" data-student-rank="${r.student_id}" style="cursor:pointer;">
+            <span class="rank-medal">${RANK_MEDALS[i] || (i + 1)}</span>
+            <span class="rank-name">${r.full_name}</span>
+            <span class="rank-percent ${r.value !== null ? "good" : ""}">${r.value !== null ? r.value.toFixed(1) : "—"}</span>
+          </div>
+        `).join("")}
+      </div>
+      <div id="ratingChartWrap" style="margin-top:16px;"></div>
+    ` : `<div class="students-empty"><div class="students-empty-icon">🎒</div><div class="students-empty-text">Guruhda o'quvchi yo'q</div></div>`;
+
+    box.querySelectorAll('input[name="ratingMode"]').forEach((r) => {
+      r.addEventListener("change", (e) => { mode = e.target.value; load(); });
+    });
+
+    box.querySelectorAll("[data-student-rank]").forEach((row) => {
+      row.addEventListener("click", () => {
+        _loadRatingChart(box.querySelector("#ratingChartWrap"), groupId, Number(row.dataset.studentRank), row.querySelector(".rank-name").textContent, now.getFullYear());
+      });
+    });
+
+    if (results.length) {
+      _loadRatingChart(box.querySelector("#ratingChartWrap"), groupId, results[0].student_id, results[0].full_name, now.getFullYear());
+    }
+  }
+
+  load();
+}
+
+async function _loadRatingChart(wrap, groupId, studentId, studentName, year) {
+  wrap.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let monthly;
+  try {
+    monthly = await api(`/api/my-groups/${groupId}/rating/${studentId}/monthly?year=${year}`);
+  } catch (err) {
+    wrap.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+  const max = Math.max(5, ...monthly.map((m) => m.avg));
+  wrap.innerHTML = `
+    <div class="badge neutral" style="margin-bottom:10px;">${studentName}</div>
+    <div class="bar-chart">
+      ${monthly.map((m) => `
+        <div class="bar-chart-col">
+          <div class="bar-chart-bar" style="height:${max ? (m.avg / max) * 100 : 0}%;" title="${m.avg.toFixed(1)}"></div>
+          <div class="bar-chart-label">${MONTH_LABELS[m.month - 1]}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function _renderExamsTab(box, g, groupId) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let exams;
+  try {
+    exams = await api(`/api/my-groups/${groupId}/exams`);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+
+  function render(exams) {
+    box.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+        <h2 style="margin:0;">O'tkazilishi kerak bo'lgan imtihonlar</h2>
+        <button class="primary" id="addExamBtn" style="width:auto;margin:0;padding:10px 16px;">➕ Yangi imtihon qo'shish</button>
+      </div>
+      <div id="examFormWrap" style="display:none;"></div>
+      ${exams.length ? `
+        <div class="card" style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Nomi</th><th>Sana</th><th>O'tish bali</th><th>Bo'lim</th><th>Umumiy bal</th><th>Baholangan</th><th></th></tr></thead>
+            <tbody>
+              ${exams.map((e) => `
+                <tr>
+                  <td>${e.name}</td>
+                  <td>${e.exam_date || "-"}</td>
+                  <td>${e.passing_score ?? "-"}</td>
+                  <td>${e.section || "-"}</td>
+                  <td>${e.total_score ?? "-"}</td>
+                  <td>${e.graded_count}/${g.students.length}</td>
+                  <td style="white-space:nowrap;">
+                    <button class="mini-btn" data-grade-exam="${e.id}">📝</button>
+                    <button class="mini-btn" data-delete-exam="${e.id}">🗑️</button>
+                  </td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      ` : `<div class="students-empty"><div class="students-empty-icon">📄</div><div class="students-empty-text">Ma'lumot topilmadi</div></div>`}
+      <div id="examResultsWrap"></div>
+    `;
+
+    box.querySelector("#addExamBtn").addEventListener("click", () => {
+      const wrap = box.querySelector("#examFormWrap");
+      const opening = wrap.style.display !== "block";
+      wrap.style.display = opening ? "block" : "none";
+      if (!opening) { wrap.innerHTML = ""; return; }
+      wrap.innerHTML = `
+        <div class="card">
+          <label>Imtihon nomi</label>
+          <input id="ex_name" type="text" placeholder="masalan: Midterm" />
+          <label>Sana</label>
+          <input id="ex_date" type="date" />
+          <label>O'tish bali</label>
+          <input id="ex_passing" type="number" min="0" />
+          <label>Bo'lim</label>
+          <input id="ex_section" type="text" placeholder="masalan: Grammar" />
+          <label>Umumiy bal</label>
+          <input id="ex_total" type="number" min="0" />
+          <button class="primary" id="saveExamBtn">✅ Saqlash</button>
+          <div id="examMsg" style="margin-top:8px;font-size:13px;"></div>
+        </div>
+      `;
+      wrap.querySelector("#saveExamBtn").addEventListener("click", async () => {
+        const msg = wrap.querySelector("#examMsg");
+        const name = wrap.querySelector("#ex_name").value.trim();
+        if (!name) {
+          msg.innerHTML = `<span class="badge warn">❌ Imtihon nomi to'ldirilishi shart</span>`;
+          return;
+        }
+        try {
+          await api(`/api/my-groups/${groupId}/exams`, {
+            method: "POST",
+            body: JSON.stringify({
+              name,
+              exam_date: wrap.querySelector("#ex_date").value || null,
+              passing_score: wrap.querySelector("#ex_passing").value ? Number(wrap.querySelector("#ex_passing").value) : null,
+              section: wrap.querySelector("#ex_section").value.trim() || null,
+              total_score: wrap.querySelector("#ex_total").value ? Number(wrap.querySelector("#ex_total").value) : null,
+            }),
+          });
+          showToast("✅ Imtihon qo'shildi");
+          exams = await api(`/api/my-groups/${groupId}/exams`);
+          render(exams);
+        } catch (err) {
+          msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+        }
+      });
+    });
+
+    box.querySelectorAll("[data-delete-exam]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const examId = Number(btn.dataset.deleteExam);
+        showConfirm("Imtihonni o'chirish", "Bu imtihon butunlay o'chirilsinmi?", async () => {
+          try {
+            await api(`/api/my-groups/${groupId}/exams/${examId}`, { method: "DELETE" });
+            showToast("🗑️ O'chirildi");
+            exams = await api(`/api/my-groups/${groupId}/exams`);
+            render(exams);
+          } catch (err) {
+            safeAlert("Xato: " + err.message);
+          }
+        });
+      });
+    });
+
+    box.querySelectorAll("[data-grade-exam]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _renderExamResults(box.querySelector("#examResultsWrap"), groupId, Number(btn.dataset.gradeExam));
+      });
+    });
+  }
+
+  render(exams);
+}
+
+async function _renderExamResults(wrap, groupId, examId) {
+  wrap.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let results;
+  try {
+    results = await api(`/api/my-groups/${groupId}/exams/${examId}/results`);
+  } catch (err) {
+    wrap.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+  wrap.innerHTML = `
+    <h2>Baholash</h2>
+    <div class="card" style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>O'quvchi</th><th>Bal</th><th>Tangalar</th><th></th></tr></thead>
+        <tbody>
+          ${results.map((r) => `
+            <tr>
+              <td>${r.full_name}</td>
+              <td><input class="exam-score" type="number" min="0" data-student="${r.student_id}" value="${r.score ?? ""}" /></td>
+              <td><input class="exam-coins" type="number" min="0" data-student="${r.student_id}" value="${r.coins ?? ""}" /></td>
+              <td><button class="mini-btn" data-save-result="${r.student_id}">💾</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+  wrap.querySelectorAll("[data-save-result]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const studentId = Number(btn.dataset.saveResult);
+      const score = wrap.querySelector(`.exam-score[data-student="${studentId}"]`).value;
+      const coins = wrap.querySelector(`.exam-coins[data-student="${studentId}"]`).value;
+      try {
+        await api(`/api/my-groups/${groupId}/exams/${examId}/results`, {
+          method: "POST",
+          body: JSON.stringify({
+            student_id: studentId,
+            score: score === "" ? null : Number(score),
+            coins: coins === "" ? null : Number(coins),
+          }),
+        });
+        showToast("✅ Saqlandi");
+      } catch (err) {
+        safeAlert("Xato: " + err.message);
+      }
+    });
+  });
+}
+
+async function _renderHistoryTab(box, g, groupId) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let history;
+  try {
+    history = await api(`/api/my-groups/${groupId}/history`);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+  box.innerHTML = history.length
+    ? `<div class="card">${history.map((h) => `
+        <div class="row">
+          <span class="label">${h.created_at}</span>
+          <span class="value" style="text-align:right;">${h.event_text}</span>
+        </div>
+      `).join("")}</div>`
+    : `<div class="students-empty"><div class="students-empty-icon">🕓</div><div class="students-empty-text">Hali tarix yo'q</div></div>`;
+}
+
+async function _renderCommentsTab(box, g, groupId) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let comments;
+  try {
+    comments = await api(`/api/my-groups/${groupId}/comments`);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+
+  function render(comments) {
+    box.innerHTML = `
+      <div class="card">
+        <textarea id="groupCommentInput" rows="3" placeholder="Izoh yozing..."></textarea>
+        <button class="primary" id="addCommentBtn">➕ Qo'shish</button>
+      </div>
+      <div class="task-comments-list" style="margin-top:12px;">
+        ${comments.length ? comments.map((c) => `
+          <div class="task-comment-item">
+            <div class="task-comment-text">${c.text}</div>
+            <div class="task-comment-time">${c.created_at}</div>
+          </div>
+        `).join("") : ""}
+      </div>
+    `;
+    box.querySelector("#addCommentBtn").addEventListener("click", async () => {
+      const input = box.querySelector("#groupCommentInput");
+      const text = input.value.trim();
+      if (!text) return;
+      try {
+        await api(`/api/my-groups/${groupId}/comments`, { method: "POST", body: JSON.stringify({ text }) });
+        comments = await api(`/api/my-groups/${groupId}/comments`);
+        render(comments);
+      } catch (err) {
+        safeAlert("Xato: " + err.message);
+      }
+    });
+  }
+
+  render(comments);
 }
 
 async function renderGroupAssignStudents(box, groupId) {

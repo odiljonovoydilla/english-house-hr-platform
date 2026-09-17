@@ -3345,6 +3345,23 @@ async def api_set_student_group(student_id: int, request: Request, x_telegram_in
     return {"ok": True}
 
 
+@app.patch("/api/my-students/{student_id}/status")
+async def api_set_student_status(student_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    """Guruh ro'yxatidagi tezkor holat almashtirish: faol / qarzdor / sinov / muzlatilgan."""
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_student(student_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+
+    body = await request.json()
+    status = body.get("status")
+    if status not in ("faol", "qarzdor", "sinov", "muzlatilgan"):
+        raise HTTPException(status_code=400, detail="Noto'g'ri holat qiymati")
+
+    db.update_student(student_id, status=status)
+    return {"ok": True}
+
+
 @app.get("/api/my-groups")
 def api_my_groups(x_telegram_init_data: str = Header(None)):
     """O'qituvchining o'ziga tegishli guruhlar ro'yxati."""
@@ -3375,7 +3392,13 @@ async def api_add_group(request: Request, x_telegram_init_data: str = Header(Non
         start_time=body.get("start_time"),
         end_time=body.get("end_time"),
         day_period=body.get("day_period"),
+        course=body.get("course"),
+        room=body.get("room"),
+        price=body.get("price"),
+        start_date=body.get("start_date"),
+        end_date=body.get("end_date"),
     )
+    db.add_group_history(group_id, f"Guruh yaratildi: {name}", created_by=emp["full_name"])
     return {"ok": True, "id": group_id}
 
 
@@ -3387,6 +3410,8 @@ def api_get_group(group_id: int, x_telegram_init_data: str = Header(None)):
         raise HTTPException(status_code=404, detail="Guruh topilmadi")
     d = dict(row)
     d["students"] = [dict(s) for s in db.list_students_in_group(group_id)]
+    d["lessons_held"] = db.count_lessons_held(row)
+    d["teacher_name"] = emp["full_name"]
     return d
 
 
@@ -3410,6 +3435,11 @@ async def api_update_group(group_id: int, request: Request, x_telegram_init_data
         start_time=body.get("start_time"),
         end_time=body.get("end_time"),
         day_period=body.get("day_period"),
+        course=body.get("course"),
+        room=body.get("room"),
+        price=body.get("price"),
+        start_date=body.get("start_date"),
+        end_date=body.get("end_date"),
     )
     return {"ok": True}
 
@@ -3447,6 +3477,291 @@ async def api_group_assign_students(group_id: int, request: Request, x_telegram_
         raise HTTPException(status_code=400, detail="Kamida bitta o'quvchi tanlang")
 
     db.assign_students_to_group(emp["teacher_id"], group_id, student_ids)
+    return {"ok": True}
+
+
+def _require_own_group(group_id: int, emp):
+    row = db.get_group(group_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+    return row
+
+
+def _require_own_student_of_group(student_id, emp):
+    student = db.get_student(student_id)
+    if not student or student["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+    return student
+
+
+# ---------- GURUH ICHI: Davomat ----------
+
+@app.get("/api/my-groups/{group_id}/attendance")
+def api_group_attendance(group_id: int, year: int, month: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = _require_own_group(group_id, emp)
+    dates = db.compute_lesson_dates(row["lesson_days"], year, month, row["start_date"], row["end_date"])
+    values = {}
+    for r in db.list_attendance(group_id, dates):
+        values.setdefault(r["student_id"], {})[r["lesson_date"]] = r["status"]
+    return {"dates": dates, "values": values}
+
+
+@app.post("/api/my-groups/{group_id}/attendance")
+async def api_set_group_attendance(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    body = await request.json()
+    _require_own_student_of_group(body.get("student_id"), emp)
+    db.set_attendance(group_id, body["student_id"], body["lesson_date"], body.get("status"))
+    return {"ok": True}
+
+
+# ---------- GURUH ICHI: Baholash ----------
+
+@app.get("/api/my-groups/{group_id}/grades")
+def api_group_grades(group_id: int, year: int, month: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = _require_own_group(group_id, emp)
+    dates = db.compute_lesson_dates(row["lesson_days"], year, month, row["start_date"], row["end_date"])
+    values = {}
+    for r in db.list_grades(group_id, dates):
+        values.setdefault(r["student_id"], {})[r["lesson_date"]] = r["score"]
+    return {"dates": dates, "values": values}
+
+
+@app.post("/api/my-groups/{group_id}/grades")
+async def api_set_group_grade(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    body = await request.json()
+    _require_own_student_of_group(body.get("student_id"), emp)
+    db.set_grade(group_id, body["student_id"], body["lesson_date"], body.get("score"))
+    return {"ok": True}
+
+
+# ---------- GURUH ICHI: Mashqlar (Unit bo'yicha bajarilish foizi) ----------
+
+@app.get("/api/my-groups/{group_id}/exercises")
+def api_group_exercises(group_id: int, year: int, month: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = _require_own_group(group_id, emp)
+    dates = db.compute_lesson_dates(row["lesson_days"], year, month, row["start_date"], row["end_date"])
+    values = {}
+    for r in db.list_exercise_scores(group_id, dates):
+        values.setdefault(r["student_id"], {})[r["lesson_date"]] = r["percent"]
+    units = {u["lesson_date"]: u["unit_name"] for u in db.list_lesson_units(group_id, dates)}
+    return {"dates": dates, "values": values, "units": units}
+
+
+@app.post("/api/my-groups/{group_id}/exercises")
+async def api_set_group_exercise(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    body = await request.json()
+    _require_own_student_of_group(body.get("student_id"), emp)
+    db.set_exercise_score(group_id, body["student_id"], body["lesson_date"], body.get("percent"))
+    return {"ok": True}
+
+
+@app.post("/api/my-groups/{group_id}/exercises/unit")
+async def api_set_group_lesson_unit(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    body = await request.json()
+    lesson_date = body.get("lesson_date")
+    if not lesson_date:
+        raise HTTPException(status_code=400, detail="Sana ko'rsatilishi shart")
+    db.set_lesson_unit(group_id, lesson_date, (body.get("unit_name") or "").strip() or None)
+    return {"ok": True}
+
+
+# ---------- GURUH ICHI: Chegirma ----------
+
+@app.get("/api/my-groups/{group_id}/discounts")
+def api_group_discounts(group_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    students = db.list_students_in_group(group_id)
+    discounts = {d["student_id"]: dict(d) for d in db.list_discounts(group_id)}
+    out = []
+    for s in students:
+        dsc = discounts.get(s["id"], {})
+        out.append({
+            "student_id": s["id"], "full_name": s["full_name"],
+            "discount_type": dsc.get("discount_type", "percent"),
+            "value": dsc.get("value", 0),
+            "reason": dsc.get("reason"),
+        })
+    return out
+
+
+@app.post("/api/my-groups/{group_id}/discounts")
+async def api_set_group_discount(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    body = await request.json()
+    _require_own_student_of_group(body.get("student_id"), emp)
+    db.set_discount(
+        group_id, body["student_id"],
+        discount_type=body.get("discount_type") or "percent",
+        value=body.get("value") or 0,
+        reason=body.get("reason"),
+    )
+    return {"ok": True}
+
+
+# ---------- GURUH ICHI: Reyting ----------
+
+@app.get("/api/my-groups/{group_id}/rating")
+def api_group_rating(group_id: int, x_telegram_init_data: str = Header(None), month: str = None, mode: str = "avg"):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    students = db.list_students_in_group(group_id)
+    all_grades = db.list_all_grades_for_group(group_id)
+
+    by_student = {}
+    for g in all_grades:
+        if g["score"] is None:
+            continue
+        if month and not g["lesson_date"].startswith(month):
+            continue
+        by_student.setdefault(g["student_id"], []).append(g["score"])
+
+    results = []
+    for s in students:
+        scores = by_student.get(s["id"], [])
+        if not scores:
+            value = None
+        elif mode == "total":
+            value = sum(scores)
+        else:
+            value = sum(scores) / len(scores)
+        results.append({"student_id": s["id"], "full_name": s["full_name"], "value": value, "count": len(scores)})
+
+    results.sort(key=lambda r: (r["value"] is None, -(r["value"] or 0)))
+    return results
+
+
+@app.get("/api/my-groups/{group_id}/rating/{student_id}/monthly")
+def api_group_rating_monthly(group_id: int, student_id: int, year: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    grades = db.list_all_grades_for_group(group_id)
+    by_month = {m: [] for m in range(1, 13)}
+    for g in grades:
+        if g["student_id"] != student_id or g["score"] is None:
+            continue
+        y, m = g["lesson_date"].split("-")[:2]
+        if int(y) != year:
+            continue
+        by_month[int(m)].append(g["score"])
+    return [{"month": m, "avg": (sum(v) / len(v)) if v else 0} for m, v in sorted(by_month.items())]
+
+
+# ---------- GURUH ICHI: Imtihonlar ----------
+
+@app.get("/api/my-groups/{group_id}/exams")
+def api_group_exams(group_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    out = []
+    for e in db.list_exams(group_id):
+        d = dict(e)
+        d["graded_count"] = len(db.list_exam_results(e["id"]))
+        out.append(d)
+    return out
+
+
+@app.post("/api/my-groups/{group_id}/exams")
+async def api_add_exam(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Imtihon nomi to'ldirilishi shart")
+    exam_id = db.add_exam(
+        group_id, name,
+        exam_date=body.get("exam_date"),
+        passing_score=body.get("passing_score"),
+        section=body.get("section"),
+        total_score=body.get("total_score"),
+    )
+    db.add_group_history(group_id, f"Yangi imtihon qo'shildi: {name}", created_by=emp["full_name"])
+    return {"ok": True, "id": exam_id}
+
+
+@app.delete("/api/my-groups/{group_id}/exams/{exam_id}")
+def api_delete_exam(group_id: int, exam_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    exam = db.get_exam(exam_id)
+    if not exam or exam["group_id"] != group_id:
+        raise HTTPException(status_code=404, detail="Imtihon topilmadi")
+    db.delete_exam(exam_id)
+    return {"ok": True}
+
+
+@app.get("/api/my-groups/{group_id}/exams/{exam_id}/results")
+def api_exam_results(group_id: int, exam_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    exam = db.get_exam(exam_id)
+    if not exam or exam["group_id"] != group_id:
+        raise HTTPException(status_code=404, detail="Imtihon topilmadi")
+    students = db.list_students_in_group(group_id)
+    results = {r["student_id"]: dict(r) for r in db.list_exam_results(exam_id)}
+    out = []
+    for s in students:
+        res = results.get(s["id"], {})
+        out.append({
+            "student_id": s["id"], "full_name": s["full_name"],
+            "score": res.get("score"), "coins": res.get("coins"),
+        })
+    return out
+
+
+@app.post("/api/my-groups/{group_id}/exams/{exam_id}/results")
+async def api_set_exam_result(group_id: int, exam_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    exam = db.get_exam(exam_id)
+    if not exam or exam["group_id"] != group_id:
+        raise HTTPException(status_code=404, detail="Imtihon topilmadi")
+    body = await request.json()
+    _require_own_student_of_group(body.get("student_id"), emp)
+    db.set_exam_result(exam_id, body["student_id"], score=body.get("score"), coins=body.get("coins"))
+    return {"ok": True}
+
+
+# ---------- GURUH ICHI: Tarix ----------
+
+@app.get("/api/my-groups/{group_id}/history")
+def api_group_history(group_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    return [dict(r) for r in db.list_group_history(group_id)]
+
+
+# ---------- GURUH ICHI: Izoh ----------
+
+@app.get("/api/my-groups/{group_id}/comments")
+def api_group_comments(group_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    return [dict(r) for r in db.list_group_comments(group_id)]
+
+
+@app.post("/api/my-groups/{group_id}/comments")
+async def api_add_group_comment(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    _require_own_group(group_id, emp)
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Izoh matni bo'sh bo'lmasligi kerak")
+    db.add_group_comment(group_id, emp["teacher_id"], text)
     return {"ok": True}
 
 

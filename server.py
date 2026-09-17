@@ -3238,7 +3238,13 @@ def api_my_students(x_telegram_init_data: str = Header(None)):
     """O'qituvchining o'ziga tegishli o'quvchilar ro'yxati."""
     emp = get_current_employee(x_telegram_init_data)
     rows = db.list_students_by_teacher(emp["teacher_id"])
-    return [dict(r) for r in rows]
+    groups_map = {g["id"]: g["name"] for g in db.list_groups_by_teacher(emp["teacher_id"])}
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["group_name"] = groups_map.get(d["group_id"])
+        out.append(d)
+    return out
 
 
 @app.post("/api/my-students")
@@ -3274,7 +3280,10 @@ def api_get_student(student_id: int, x_telegram_init_data: str = Header(None)):
     row = db.get_student(student_id)
     if not row or row["teacher_id"] != emp["teacher_id"]:
         raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
-    return dict(row)
+    d = dict(row)
+    group = db.get_group(d["group_id"]) if d["group_id"] else None
+    d["group_name"] = group["name"] if group else None
+    return d
 
 
 @app.patch("/api/my-students/{student_id}")
@@ -3314,6 +3323,130 @@ def api_delete_student(student_id: int, x_telegram_init_data: str = Header(None)
     if not row or row["teacher_id"] != emp["teacher_id"]:
         raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
     db.deactivate_student(student_id)
+    return {"ok": True}
+
+
+@app.patch("/api/my-students/{student_id}/group")
+async def api_set_student_group(student_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    """O'quvchini boshqa guruhga ko'chiradi (yoki group_id=null bo'lsa, guruhdan chiqaradi)."""
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_student(student_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="O'quvchi topilmadi")
+
+    body = await request.json()
+    group_id = body.get("group_id")
+    if group_id is not None:
+        group_row = db.get_group(group_id)
+        if not group_row or group_row["teacher_id"] != emp["teacher_id"]:
+            raise HTTPException(status_code=404, detail="Guruh topilmadi")
+
+    db.set_student_group(student_id, group_id)
+    return {"ok": True}
+
+
+@app.get("/api/my-groups")
+def api_my_groups(x_telegram_init_data: str = Header(None)):
+    """O'qituvchining o'ziga tegishli guruhlar ro'yxati."""
+    emp = get_current_employee(x_telegram_init_data)
+    rows = db.list_groups_by_teacher(emp["teacher_id"])
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["student_count"] = db.count_students_in_group(r["id"])
+        out.append(d)
+    return out
+
+
+@app.post("/api/my-groups")
+async def api_add_group(request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    body = await request.json()
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Guruh nomi to'ldirilishi shart")
+
+    lesson_days = body.get("lesson_days")
+    group_id = db.add_group(
+        teacher_id=emp["teacher_id"],
+        name=name,
+        lesson_days=",".join(lesson_days) if lesson_days else None,
+        start_time=body.get("start_time"),
+        end_time=body.get("end_time"),
+        day_period=body.get("day_period"),
+    )
+    return {"ok": True, "id": group_id}
+
+
+@app.get("/api/my-groups/{group_id}")
+def api_get_group(group_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_group(group_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+    d = dict(row)
+    d["students"] = [dict(s) for s in db.list_students_in_group(group_id)]
+    return d
+
+
+@app.patch("/api/my-groups/{group_id}")
+async def api_update_group(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_group(group_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+
+    body = await request.json()
+    name = body.get("name")
+    if name is not None and not name.strip():
+        raise HTTPException(status_code=400, detail="Guruh nomi to'ldirilishi shart")
+
+    lesson_days = body.get("lesson_days")
+    db.update_group(
+        group_id,
+        name=name.strip() if name is not None else None,
+        lesson_days=",".join(lesson_days) if lesson_days is not None else None,
+        start_time=body.get("start_time"),
+        end_time=body.get("end_time"),
+        day_period=body.get("day_period"),
+    )
+    return {"ok": True}
+
+
+@app.delete("/api/my-groups/{group_id}")
+def api_delete_group(group_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_group(group_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+    db.deactivate_group(group_id)
+    return {"ok": True}
+
+
+@app.get("/api/my-groups/{group_id}/unassigned-students")
+def api_group_unassigned_students(group_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_group(group_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+    rows = db.list_unassigned_students(emp["teacher_id"])
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/my-groups/{group_id}/assign")
+async def api_group_assign_students(group_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    row = db.get_group(group_id)
+    if not row or row["teacher_id"] != emp["teacher_id"]:
+        raise HTTPException(status_code=404, detail="Guruh topilmadi")
+
+    body = await request.json()
+    student_ids = body.get("student_ids") or []
+    if not student_ids:
+        raise HTTPException(status_code=400, detail="Kamida bitta o'quvchi tanlang")
+
+    db.assign_students_to_group(emp["teacher_id"], group_id, student_ids)
     return {"ok": True}
 
 

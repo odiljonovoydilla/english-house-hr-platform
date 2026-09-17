@@ -659,6 +659,7 @@ const TEACHER_NAV_ITEMS = [
   { id: "kpi", icon: "📊", label: "KPI" },
   { id: "salary", icon: "💰", label: "Ish haqi" },
   { id: "students", icon: "🎒", label: "O'quvchilarim" },
+  { id: "groups", icon: "👨‍👩‍👧‍👦", label: "Guruhlarim" },
   { id: "tasks", icon: "📋", label: "Topshiriqlar" },
   { id: "rules", icon: "📜", label: "Asosiy qoidalar" },
 ];
@@ -680,6 +681,7 @@ function renderTeacherTab(tab, box, me) {
   else if (tab === "kpi") renderTeacherKpiSection(box);
   else if (tab === "salary") renderTeacherSalarySection(box);
   else if (tab === "students") renderMyStudentsSection(box);
+  else if (tab === "groups") renderMyGroupsSection(box);
   else if (tab === "tasks") renderTasksTab(box, me);
   else if (tab === "rules") renderKpiRulesTab(box);
 }
@@ -936,6 +938,7 @@ const SUBJECT_TEACHER_NAV_ITEMS = [
   { id: "profile", icon: "👤", label: "Ma'lumotim" },
   { id: "salary", icon: "💰", label: "Ish haqi" },
   { id: "students", icon: "🎒", label: "O'quvchilarim" },
+  { id: "groups", icon: "👨‍👩‍👧‍👦", label: "Guruhlarim" },
   { id: "tasks", icon: "📋", label: "Topshiriqlar" },
 ];
 
@@ -955,6 +958,7 @@ function renderSubjectTeacherTab(tab, box, me) {
   if (tab === "profile") renderSubjectTeacherProfileSection(box);
   else if (tab === "salary") renderSubjectTeacherSalarySection(box);
   else if (tab === "students") renderMyStudentsSection(box);
+  else if (tab === "groups") renderMyGroupsSection(box);
   else if (tab === "tasks") renderTasksTab(box, me);
 }
 
@@ -1809,7 +1813,7 @@ function _renderStudentsList(box, students) {
             <div class="student-avatar">${_studentInitials(s.full_name)}</div>
             <div class="student-row-main">
               <div class="student-row-name">${s.full_name}</div>
-              <div class="student-row-meta">${_studentGenderIcon(s.gender)}${s.age ? ` ${s.age} yosh` : ""}${s.class_grade ? ` · ${s.class_grade}-sinf` : ""}${s.course ? ` · ${s.course}` : ""}</div>
+              <div class="student-row-meta">${_studentGenderIcon(s.gender)}${s.age ? ` ${s.age} yosh` : ""}${s.class_grade ? ` · ${s.class_grade}-sinf` : ""}${s.course ? ` · ${s.course}` : ""}${s.group_name ? ` · 🏷️ ${s.group_name}` : ""}</div>
             </div>
             <div class="menu-arrow">›</div>
           </div>
@@ -2006,11 +2010,14 @@ async function renderStudentDetail(box, studentId) {
   }
 
   box.innerHTML = `
-    <button class="back-btn" id="studentDetailBackBtn">← Ro'yxatga qaytish</button>
+    <div class="students-head-row" style="justify-content:space-between;">
+      <button class="back-btn" id="studentDetailBackBtn" style="margin-bottom:0;">← Ro'yxatga qaytish</button>
+      <button class="secondary" id="transferGroupBtn" style="width:auto;margin-top:0;padding:8px 14px;font-size:13px;">🏷️ Guruhga ko'chirish</button>
+    </div>
     <div class="teacher-hero" style="padding-top:4px;">
       <div class="student-detail-avatar">${_studentInitials(s.full_name)}</div>
       <h1 style="margin-bottom:2px;">${s.full_name}</h1>
-      <div class="teacher-sub">${_studentGenderIcon(s.gender)} ${s.gender || "Jinsi kiritilmagan"}${s.age ? ` · ${s.age} yosh` : ""}</div>
+      <div class="teacher-sub">${_studentGenderIcon(s.gender)} ${s.gender || "Jinsi kiritilmagan"}${s.age ? ` · ${s.age} yosh` : ""}${s.group_name ? ` · 🏷️ ${s.group_name}` : " · Guruhsiz"}</div>
     </div>
 
     ${_studentFormHtml(s, { startOpen: false })}
@@ -2023,6 +2030,18 @@ async function renderStudentDetail(box, studentId) {
   box.querySelector("#studentDetailBackBtn").addEventListener("click", () => renderMyStudentsSection(box));
   _wireStudentForm(box);
   _wireRuleToggles(box);
+
+  box.querySelector("#transferGroupBtn").addEventListener("click", () => {
+    showGroupTransferModal(s.group_id, async (newGroupId) => {
+      try {
+        await api(`/api/my-students/${studentId}/group`, { method: "PATCH", body: JSON.stringify({ group_id: newGroupId }) });
+        showToast("✅ Guruh yangilandi");
+        renderStudentDetail(box, studentId);
+      } catch (err) {
+        safeAlert("Xato: " + err.message);
+      }
+    });
+  });
 
   box.querySelector("#saveStudentDetailBtn").addEventListener("click", async () => {
     const msg = box.querySelector("#studentDetailMsg");
@@ -2057,6 +2076,366 @@ async function renderStudentDetail(box, studentId) {
         }
       }
     );
+  });
+}
+
+// ============================================================
+// GURUHLARIM — o'qituvchining shaxsiy guruhlari (dars jadvali)
+// ============================================================
+
+const WEEKDAYS = [
+  { key: "mon", label: "Dush" },
+  { key: "tue", label: "Sesh" },
+  { key: "wed", label: "Chor" },
+  { key: "thu", label: "Pay" },
+  { key: "fri", label: "Juma" },
+  { key: "sat", label: "Shan" },
+  { key: "sun", label: "Yak" },
+];
+
+function _groupScheduleSummary(g) {
+  const days = (g.lesson_days || "").split(",").filter(Boolean)
+    .map((k) => (WEEKDAYS.find((w) => w.key === k) || {}).label || k)
+    .join(", ");
+  const time = g.start_time && g.end_time ? `${g.start_time}–${g.end_time}` : (g.start_time || g.end_time || "");
+  return [days, time, g.day_period].filter(Boolean).join(" · ") || "Jadval belgilanmagan";
+}
+
+async function showGroupTransferModal(currentGroupId, onConfirm) {
+  let groups;
+  try {
+    groups = await api("/api/my-groups");
+  } catch (err) {
+    safeAlert("Xato: " + err.message);
+    return;
+  }
+
+  const overlay = el(`
+    <div class="modal-overlay">
+      <div class="modal-box">
+        <h3>Guruhga ko'chirish</h3>
+        <div class="modal-message">
+          <label>Guruhni tanlang</label>
+          <select id="groupTransferSelect">
+            <option value="">— Guruhsiz —</option>
+            ${groups.map((g) => `<option value="${g.id}" ${g.id === currentGroupId ? "selected" : ""}>${g.name} (${_groupScheduleSummary(g)})</option>`).join("")}
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary" id="modalCancel">Bekor qilish</button>
+          <button class="primary" id="modalOk">Ko'chirish</button>
+        </div>
+      </div>
+    </div>
+  `);
+  document.body.appendChild(overlay);
+  overlay.querySelector("#modalCancel").addEventListener("click", () => overlay.remove());
+  overlay.querySelector("#modalOk").addEventListener("click", () => {
+    const val = overlay.querySelector("#groupTransferSelect").value;
+    overlay.remove();
+    onConfirm(val ? Number(val) : null);
+  });
+}
+
+async function renderMyGroupsSection(box) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  try {
+    const groups = await api("/api/my-groups");
+    _renderGroupsList(box, groups);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+  }
+}
+
+function _renderGroupsList(box, groups) {
+  box.innerHTML = `
+    <div class="students-head-row">
+      <div class="students-count-chip">👥 ${groups.length} ta guruh</div>
+    </div>
+    <button class="primary" id="addGroupBtn">➕ Yangi guruh yaratish</button>
+    <div class="student-list" id="groupListContainer"></div>
+  `;
+
+  const listContainer = box.querySelector("#groupListContainer");
+  listContainer.innerHTML = groups.length
+    ? groups.map((g) => `
+        <div class="student-row" data-id="${g.id}">
+          <div class="student-avatar">👥</div>
+          <div class="student-row-main">
+            <div class="student-row-name">${g.name}</div>
+            <div class="student-row-meta">${_groupScheduleSummary(g)} · 🎒 ${g.student_count} o'quvchi</div>
+          </div>
+          <div class="menu-arrow">›</div>
+        </div>
+      `).join("")
+    : `<div class="students-empty">
+        <div class="students-empty-icon">👨‍👩‍👧‍👦</div>
+        <div class="students-empty-text">Hali guruh yaratilmagan</div>
+        <div class="students-empty-sub">Yuqoridagi tugma orqali birinchi guruhni yarating</div>
+      </div>`;
+
+  listContainer.querySelectorAll(".student-row").forEach((row) => {
+    row.addEventListener("click", () => renderGroupDetail(box, Number(row.dataset.id)));
+  });
+
+  box.querySelector("#addGroupBtn").addEventListener("click", () => renderGroupAddForm(box));
+}
+
+function _groupFormHtml(g) {
+  const selectedDays = (g.lesson_days || "").split(",").filter(Boolean);
+  const dp = g.day_period || "";
+  return `
+    <div class="card">
+      <label>Guruh nomi</label>
+      <input id="gf_name" type="text" placeholder="masalan: Beginner-A" value="${_studentAttr(g.name)}" />
+
+      <label>Dars kunlari</label>
+      <div class="weekday-grid">
+        ${WEEKDAYS.map((w) => `
+          <label class="weekday-chip ${selectedDays.includes(w.key) ? "checked" : ""}">
+            <input type="checkbox" value="${w.key}" ${selectedDays.includes(w.key) ? "checked" : ""} style="width:auto;margin:0;" />
+            ${w.label}
+          </label>
+        `).join("")}
+      </div>
+
+      <label>Boshlanish vaqti</label>
+      <input id="gf_start_time" type="time" value="${_studentAttr(g.start_time)}" />
+
+      <label>Tugash vaqti</label>
+      <input id="gf_end_time" type="time" value="${_studentAttr(g.end_time)}" />
+
+      <label>Kun vaqti</label>
+      <select id="gf_day_period">
+        <option value="" ${dp === "" ? "selected" : ""}>Tanlanmagan</option>
+        <option value="Ertalab" ${dp === "Ertalab" ? "selected" : ""}>🌅 Ertalab</option>
+        <option value="Tushlikdan keyin" ${dp === "Tushlikdan keyin" ? "selected" : ""}>🌇 Tushlikdan keyin</option>
+      </select>
+    </div>
+  `;
+}
+
+function _wireGroupForm(box) {
+  box.querySelectorAll(".weekday-chip").forEach((chip) => {
+    const cb = chip.querySelector("input[type=checkbox]");
+    cb.addEventListener("change", () => {
+      chip.classList.toggle("checked", cb.checked);
+    });
+  });
+}
+
+function _readGroupForm(box) {
+  const name = box.querySelector("#gf_name").value.trim();
+  const lesson_days = Array.from(box.querySelectorAll(".weekday-chip input:checked")).map((cb) => cb.value);
+  return {
+    name,
+    lesson_days,
+    start_time: box.querySelector("#gf_start_time").value || null,
+    end_time: box.querySelector("#gf_end_time").value || null,
+    day_period: box.querySelector("#gf_day_period").value || null,
+  };
+}
+
+function renderGroupAddForm(box) {
+  box.innerHTML = `
+    <button class="back-btn" id="groupFormBackBtn">← Ro'yxatga qaytish</button>
+    <div class="teacher-hero" style="padding-top:4px;">
+      <div class="student-detail-avatar">👥</div>
+      <h1 style="margin-bottom:2px;">Yangi guruh</h1>
+      <div class="teacher-sub">Dars jadvalini kiriting</div>
+    </div>
+    ${_groupFormHtml({})}
+    <button class="primary" id="saveGroupBtn">✅ Saqlash</button>
+    <div id="groupFormMsg" style="margin-top:8px;font-size:13px;"></div>
+  `;
+
+  box.querySelector("#groupFormBackBtn").addEventListener("click", () => renderMyGroupsSection(box));
+  _wireGroupForm(box);
+
+  box.querySelector("#saveGroupBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#groupFormMsg");
+    const data = _readGroupForm(box);
+    if (!data.name) {
+      msg.innerHTML = `<span class="badge warn">❌ Guruh nomi to'ldirilishi shart</span>`;
+      return;
+    }
+    const btn = box.querySelector("#saveGroupBtn");
+    btn.disabled = true;
+    try {
+      await api("/api/my-groups", { method: "POST", body: JSON.stringify(data) });
+      showToast("✅ Guruh yaratildi");
+      renderMyGroupsSection(box);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      btn.disabled = false;
+    }
+  });
+}
+
+async function renderGroupDetail(box, groupId) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let g;
+  try {
+    g = await api(`/api/my-groups/${groupId}`);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+
+  const studentsHtml = g.students.length
+    ? g.students.map((s) => `
+        <div class="student-row" data-id="${s.id}">
+          <div class="student-avatar">${_studentInitials(s.full_name)}</div>
+          <div class="student-row-main">
+            <div class="student-row-name">${s.full_name}</div>
+            <div class="student-row-meta">${_studentGenderIcon(s.gender)}${s.age ? ` ${s.age} yosh` : ""}</div>
+          </div>
+          <button class="mini-btn" data-unassign="${s.id}" title="Guruhdan chiqarish">🗑️</button>
+        </div>
+      `).join("")
+    : `<div class="students-empty">
+        <div class="students-empty-icon">🎒</div>
+        <div class="students-empty-text">Hali o'quvchi biriktirilmagan</div>
+      </div>`;
+
+  box.innerHTML = `
+    <button class="back-btn" id="groupDetailBackBtn">← Ro'yxatga qaytish</button>
+    <div class="teacher-hero" style="padding-top:4px;">
+      <div class="student-detail-avatar">👥</div>
+      <h1 style="margin-bottom:2px;">${g.name}</h1>
+      <div class="teacher-sub">${_groupScheduleSummary(g)}</div>
+    </div>
+
+    ${_groupFormHtml(g)}
+    <button class="primary" id="saveGroupDetailBtn">✅ O'zgarishlarni saqlash</button>
+    <div id="groupDetailMsg" style="margin-top:8px;font-size:13px;"></div>
+
+    <h2>🎒 Biriktirilgan o'quvchilar (${g.students.length})</h2>
+    <button class="secondary" id="assignStudentsBtn">➕ O'quvchi biriktirish</button>
+    <div class="student-list">${studentsHtml}</div>
+
+    <h2>Guruhni boshqarish</h2>
+    <button class="secondary" id="deleteGroupBtn">🗑️ Guruhni o'chirish</button>
+  `;
+
+  box.querySelector("#groupDetailBackBtn").addEventListener("click", () => renderMyGroupsSection(box));
+  _wireGroupForm(box);
+
+  box.querySelector("#saveGroupDetailBtn").addEventListener("click", async () => {
+    const msg = box.querySelector("#groupDetailMsg");
+    const data = _readGroupForm(box);
+    if (!data.name) {
+      msg.innerHTML = `<span class="badge warn">❌ Guruh nomi to'ldirilishi shart</span>`;
+      return;
+    }
+    const btn = box.querySelector("#saveGroupDetailBtn");
+    btn.disabled = true;
+    try {
+      await api(`/api/my-groups/${groupId}`, { method: "PATCH", body: JSON.stringify(data) });
+      showToast("✅ Saqlandi");
+      renderGroupDetail(box, groupId);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      btn.disabled = false;
+    }
+  });
+
+  box.querySelector("#assignStudentsBtn").addEventListener("click", () => {
+    renderGroupAssignStudents(box, groupId);
+  });
+
+  box.querySelectorAll("[data-unassign]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const studentId = Number(btn.dataset.unassign);
+      showConfirm(
+        "O'quvchini guruhdan chiqarish",
+        "Bu o'quvchi guruhdan chiqarilsinmi? U guruhsiz holatga qaytadi.",
+        async () => {
+          try {
+            await api(`/api/my-students/${studentId}/group`, { method: "PATCH", body: JSON.stringify({ group_id: null }) });
+            showToast("✅ Guruhdan chiqarildi");
+            renderGroupDetail(box, groupId);
+          } catch (err) {
+            safeAlert("Xato: " + err.message);
+          }
+        }
+      );
+    });
+  });
+
+  box.querySelector("#deleteGroupBtn").addEventListener("click", () => {
+    showConfirm(
+      "Guruhni o'chirish",
+      `<b>${g.name}</b> guruhini o'chirmoqchimisiz? Unga biriktirilgan o'quvchilar guruhsiz holatga qaytadi.`,
+      async () => {
+        try {
+          await api(`/api/my-groups/${groupId}`, { method: "DELETE" });
+          showToast("🗑️ Guruh o'chirildi");
+          renderMyGroupsSection(box);
+        } catch (err) {
+          safeAlert("Xato: " + err.message);
+        }
+      }
+    );
+  });
+}
+
+async function renderGroupAssignStudents(box, groupId) {
+  box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+  let students;
+  try {
+    students = await api(`/api/my-groups/${groupId}/unassigned-students`);
+  } catch (err) {
+    box.innerHTML = `<div class="error-box">Xato: ${err.message}</div>`;
+    return;
+  }
+
+  const listHtml = students.length
+    ? students.map((s) => `
+        <label class="check-row">
+          <input type="checkbox" value="${s.id}" style="width:auto;margin:0;" />
+          <span>${s.full_name}${s.class_grade ? ` · ${s.class_grade}-sinf` : ""}</span>
+        </label>
+      `).join("")
+    : `<div class="students-empty">
+        <div class="students-empty-icon">🎒</div>
+        <div class="students-empty-text">Guruhsiz o'quvchi yo'q</div>
+        <div class="students-empty-sub">Barcha o'quvchilar allaqachon biror guruhga biriktirilgan</div>
+      </div>`;
+
+  box.innerHTML = `
+    <button class="back-btn" id="assignBackBtn">← Guruhga qaytish</button>
+    <h1 style="margin-bottom:2px;">O'quvchi biriktirish</h1>
+    <div class="teacher-sub" style="margin-bottom:14px;">Guruhga qo'shmoqchi bo'lgan o'quvchilarni tanlang</div>
+    <div class="card" id="assignListCard">${listHtml}</div>
+    <button class="primary" id="assignConfirmBtn" disabled>✅ Tanlanganlarni qo'shish (0)</button>
+    <div id="assignMsg" style="margin-top:8px;font-size:13px;"></div>
+  `;
+
+  box.querySelector("#assignBackBtn").addEventListener("click", () => renderGroupDetail(box, groupId));
+
+  const confirmBtn = box.querySelector("#assignConfirmBtn");
+  function updateCount() {
+    const n = box.querySelectorAll("#assignListCard input:checked").length;
+    confirmBtn.textContent = `✅ Tanlanganlarni qo'shish (${n})`;
+    confirmBtn.disabled = n === 0;
+  }
+  box.querySelectorAll("#assignListCard input[type=checkbox]").forEach((cb) => {
+    cb.addEventListener("change", updateCount);
+  });
+
+  confirmBtn.addEventListener("click", async () => {
+    const ids = Array.from(box.querySelectorAll("#assignListCard input:checked")).map((cb) => Number(cb.value));
+    const msg = box.querySelector("#assignMsg");
+    confirmBtn.disabled = true;
+    try {
+      await api(`/api/my-groups/${groupId}/assign`, { method: "POST", body: JSON.stringify({ student_ids: ids }) });
+      showToast("✅ Guruhga qo'shildi");
+      renderGroupDetail(box, groupId);
+    } catch (err) {
+      msg.innerHTML = `<span class="badge warn">❌ ${err.message}</span>`;
+      confirmBtn.disabled = false;
+    }
   });
 }
 

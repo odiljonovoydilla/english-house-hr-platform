@@ -612,6 +612,24 @@ def init_db():
     )
     """)
 
+    # O'qituvchining shaxsiy guruhlari ("Guruhlarim") — dars jadvali va o'quvchilarni
+    # guruhlarga biriktirish uchun
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS student_groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        teacher_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        lesson_days TEXT,
+        start_time TEXT,
+        end_time TEXT,
+        day_period TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+    )
+    """)
+    _add_column_if_missing("students", "group_id", "INTEGER")
+
     # Eski bazalarda yo'q bo'lishi mumkin bo'lgan ustunlar (xavfsiz migratsiya)
     _add_column_if_missing("tasks", "deadline", "TEXT")
     _add_column_if_missing("tasks", "category", "TEXT")
@@ -2256,4 +2274,103 @@ def update_student(student_id: int, full_name: str = None, age: int = None, gend
 
 def deactivate_student(student_id: int):
     _conn.execute("UPDATE students SET active=0, updated_at=? WHERE id=?", (now_iso(), student_id))
+    _conn.commit()
+
+
+def set_student_group(student_id: int, group_id):
+    """group_id None bo'lsa — o'quvchi guruhdan chiqariladi (guruhsiz holatga qaytadi)."""
+    _conn.execute(
+        "UPDATE students SET group_id=?, updated_at=? WHERE id=?",
+        (group_id, now_iso(), student_id)
+    )
+    _conn.commit()
+
+
+# ---------- O'QITUVCHINING SHAXSIY GURUHLARI ----------
+
+def add_group(teacher_id: str, name: str, lesson_days: str = None, start_time: str = None,
+              end_time: str = None, day_period: str = None):
+    now = now_iso()
+    _conn.execute("""
+        INSERT INTO student_groups (teacher_id, name, lesson_days, start_time, end_time, day_period,
+                                     active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    """, (teacher_id, name, lesson_days, start_time, end_time, day_period, now, now))
+    _conn.commit()
+    return _conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+
+
+def get_group(group_id: int):
+    return _conn.execute("SELECT * FROM student_groups WHERE id=?", (group_id,)).fetchone()
+
+
+def list_groups_by_teacher(teacher_id: str):
+    return _conn.execute(
+        "SELECT * FROM student_groups WHERE teacher_id=? AND active=1 ORDER BY name COLLATE NOCASE",
+        (teacher_id,)
+    ).fetchall()
+
+
+def update_group(group_id: int, name: str = None, lesson_days: str = None, start_time: str = None,
+                  end_time: str = None, day_period: str = None):
+    fields, values = [], []
+    if name is not None:
+        fields.append("name=?"); values.append(name)
+    if lesson_days is not None:
+        fields.append("lesson_days=?"); values.append(lesson_days)
+    if start_time is not None:
+        fields.append("start_time=?"); values.append(start_time)
+    if end_time is not None:
+        fields.append("end_time=?"); values.append(end_time)
+    if day_period is not None:
+        fields.append("day_period=?"); values.append(day_period)
+
+    if not fields:
+        return
+    fields.append("updated_at=?"); values.append(now_iso())
+    values.append(group_id)
+    _conn.execute(f"UPDATE student_groups SET {', '.join(fields)} WHERE id=?", values)
+    _conn.commit()
+
+
+def deactivate_group(group_id: int):
+    _conn.execute("UPDATE student_groups SET active=0, updated_at=? WHERE id=?", (now_iso(), group_id))
+    _conn.commit()
+    # Guruh o'chirilganda unga biriktirilgan o'quvchilar guruhsiz holatga qaytadi
+    _conn.execute(
+        "UPDATE students SET group_id=NULL, updated_at=? WHERE group_id=?",
+        (now_iso(), group_id)
+    )
+    _conn.commit()
+
+
+def count_students_in_group(group_id: int) -> int:
+    return _conn.execute(
+        "SELECT COUNT(*) AS c FROM students WHERE group_id=? AND active=1", (group_id,)
+    ).fetchone()["c"]
+
+
+def list_students_in_group(group_id: int):
+    return _conn.execute(
+        "SELECT * FROM students WHERE group_id=? AND active=1 ORDER BY full_name COLLATE NOCASE",
+        (group_id,)
+    ).fetchall()
+
+
+def list_unassigned_students(teacher_id: str):
+    return _conn.execute(
+        "SELECT * FROM students WHERE teacher_id=? AND active=1 AND group_id IS NULL ORDER BY full_name COLLATE NOCASE",
+        (teacher_id,)
+    ).fetchall()
+
+
+def assign_students_to_group(teacher_id: str, group_id: int, student_ids: list):
+    if not student_ids:
+        return
+    now = now_iso()
+    placeholders = ",".join("?" for _ in student_ids)
+    _conn.execute(
+        f"UPDATE students SET group_id=?, updated_at=? WHERE teacher_id=? AND id IN ({placeholders})",
+        [group_id, now, teacher_id] + list(student_ids)
+    )
     _conn.commit()

@@ -1389,3 +1389,44 @@ body.shell-active { padding-bottom: 0; }
   margin: 16px 0 8px;
 }
 .sf-group-label:first-child { margin-top: 4px; }
+
+/* ---------- Guruhlarim: dars kunlari tanlash ---------- */
+.weekday-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.weekday-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 20px;
+  background: var(--input-bg);
+  border: 1px solid var(--divider);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease), color 0.15s var(--ease);
+}
+.weekday-chip.checked {
+  background: var(--tint);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* ---------- Guruhga o'quvchi biriktirish: belgilanadigan ro'yxat ---------- */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: var(--r-md);
+  background: var(--input-bg);
+  margin-bottom: 6px;
+  cursor: pointer;
+  font-size: 13.5px;
+}
+.check-row:last-child { margin-bottom: 0; }

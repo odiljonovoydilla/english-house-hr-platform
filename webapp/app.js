@@ -658,8 +658,6 @@ const TEACHER_NAV_ITEMS = [
   { id: "teacher", icon: "🧑‍🏫", label: "Teacher" },
   { id: "kpi", icon: "📊", label: "KPI" },
   { id: "salary", icon: "💰", label: "Ish haqi" },
-  { id: "students", icon: "🎒", label: "O'quvchilarim" },
-  { id: "groups", icon: "👨‍👩‍👧‍👦", label: "Guruhlarim" },
   { id: "tasks", icon: "📋", label: "Topshiriqlar" },
   { id: "rules", icon: "📜", label: "Asosiy qoidalar" },
 ];
@@ -680,8 +678,6 @@ function renderTeacherTab(tab, box, me) {
   if (tab === "teacher") renderTeacherProfileSection(box);
   else if (tab === "kpi") renderTeacherKpiSection(box);
   else if (tab === "salary") renderTeacherSalarySection(box);
-  else if (tab === "students") renderMyStudentsSection(box);
-  else if (tab === "groups") renderMyGroupsSection(box);
   else if (tab === "tasks") renderTasksTab(box, me);
   else if (tab === "rules") renderKpiRulesTab(box);
 }
@@ -937,8 +933,6 @@ async function renderStaffSalarySection(box, me) {
 const SUBJECT_TEACHER_NAV_ITEMS = [
   { id: "profile", icon: "👤", label: "Ma'lumotim" },
   { id: "salary", icon: "💰", label: "Ish haqi" },
-  { id: "students", icon: "🎒", label: "O'quvchilarim" },
-  { id: "groups", icon: "👨‍👩‍👧‍👦", label: "Guruhlarim" },
   { id: "tasks", icon: "📋", label: "Topshiriqlar" },
 ];
 
@@ -957,8 +951,6 @@ function renderSubjectTeacherTab(tab, box, me) {
   box.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
   if (tab === "profile") renderSubjectTeacherProfileSection(box);
   else if (tab === "salary") renderSubjectTeacherSalarySection(box);
-  else if (tab === "students") renderMyStudentsSection(box);
-  else if (tab === "groups") renderMyGroupsSection(box);
   else if (tab === "tasks") renderTasksTab(box, me);
 }
 

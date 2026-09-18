@@ -6,6 +6,7 @@ Railway'da fayl saqlanishi uchun Volume ulash kerak (quyida DB_PATH orqali).
 """
 
 import os
+import re
 import secrets
 import sqlite3
 import hashlib
@@ -2527,12 +2528,19 @@ def get_group(group_id: int):
 
 
 def get_group_by_name_and_teacher(teacher_id: str, name: str):
-    """Guruh nomi + o'qituvchi bo'yicha aniq (katta/kichik harf farq qilmaydi)
-    moslikni qidiradi — tashqi sinxronizatsiya (masalan LC-UP) uchun."""
-    return _conn.execute(
-        "SELECT * FROM student_groups WHERE teacher_id=? AND LOWER(name)=LOWER(?) AND active=1",
-        (teacher_id, (name or "").strip())
-    ).fetchone()
+    """Guruh nomi + o'qituvchi bo'yicha moslikni qidiradi — tashqi sinxronizatsiya
+    (masalan LC-UP) uchun. Solishtirishdan oldin katta/kichik harf farqi va
+    ketma-ket bo'shliqlar (masalan ikki probel) e'tiborga olinmaydi — eski
+    yozuvlarda formatlash farq qilishi mumkin (SQLite'da bo'shliqni "collapse"
+    qiladigan regex funksiyasi yo'q, shuning uchun solishtirish Python tomonida)."""
+    target = re.sub(r"\s+", " ", (name or "").strip()).lower()
+    rows = _conn.execute(
+        "SELECT * FROM student_groups WHERE teacher_id=? AND active=1", (teacher_id,)
+    ).fetchall()
+    for row in rows:
+        if re.sub(r"\s+", " ", (row["name"] or "").strip()).lower() == target:
+            return row
+    return None
 
 
 def list_groups_by_teacher(teacher_id: str):

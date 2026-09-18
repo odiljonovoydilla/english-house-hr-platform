@@ -864,6 +864,17 @@ def get_employee_by_login(login: str):
     ).fetchone()
 
 
+def get_employee_by_full_name(full_name: str):
+    """To'liq ism bo'yicha aniq (katta/kichik harf farq qilmaydi) moslikni qidiradi —
+    tashqi sinxronizatsiya (masalan LC-UP) uchun. 0 yoki bir nechta moslik topilsa
+    None qaytaradi (noaniqlik xavfsizligi — taxmin qilinmaydi)."""
+    rows = _conn.execute(
+        "SELECT * FROM employees WHERE LOWER(full_name)=LOWER(?) AND active=1",
+        ((full_name or "").strip(),)
+    ).fetchall()
+    return rows[0] if len(rows) == 1 else None
+
+
 def is_login_taken(login: str, except_teacher_id: str = None) -> bool:
     row = _conn.execute(
         "SELECT teacher_id FROM employees WHERE LOWER(login)=LOWER(?)", ((login or "").strip(),)
@@ -2399,6 +2410,15 @@ def get_student(student_id: int):
     return _conn.execute("SELECT * FROM students WHERE id=?", (student_id,)).fetchone()
 
 
+def get_student_by_name_and_group(group_id: int, full_name: str):
+    """Guruh ichida ism bo'yicha aniq (katta/kichik harf farq qilmaydi) moslikni
+    qidiradi — tashqi sinxronizatsiya (masalan LC-UP) uchun."""
+    return _conn.execute(
+        "SELECT * FROM students WHERE group_id=? AND LOWER(full_name)=LOWER(?) AND active=1",
+        (group_id, (full_name or "").strip())
+    ).fetchone()
+
+
 def list_students_by_teacher(teacher_id: str):
     return _conn.execute(
         "SELECT * FROM students WHERE teacher_id=? AND active=1 ORDER BY full_name COLLATE NOCASE",
@@ -2504,6 +2524,15 @@ def add_group(teacher_id: str, name: str, lesson_days: str = None, start_time: s
 
 def get_group(group_id: int):
     return _conn.execute("SELECT * FROM student_groups WHERE id=?", (group_id,)).fetchone()
+
+
+def get_group_by_name_and_teacher(teacher_id: str, name: str):
+    """Guruh nomi + o'qituvchi bo'yicha aniq (katta/kichik harf farq qilmaydi)
+    moslikni qidiradi — tashqi sinxronizatsiya (masalan LC-UP) uchun."""
+    return _conn.execute(
+        "SELECT * FROM student_groups WHERE teacher_id=? AND LOWER(name)=LOWER(?) AND active=1",
+        (teacher_id, (name or "").strip())
+    ).fetchone()
 
 
 def list_groups_by_teacher(teacher_id: str):

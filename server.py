@@ -342,17 +342,19 @@ def _verify_service_api_key(authorization: str) -> bool:
 def get_current_employee_or_service(x_telegram_init_data: str = Header(None), authorization: str = Header(None)):
     """
     Xodim sessiyasi (cookie) BILAN BIRGA — xizmat API kaliti orqali ham kirish imkonini beruvchi
-    qo'shimcha funksiya. FAQAT quyidagi topshiriqlar (tasks) endpoint'larida ishlatiladi:
+    qo'shimcha funksiya. FAQAT quyidagi endpoint'larda ishlatiladi:
       /api/tasks (POST), /api/tasks/all (GET), /api/tasks/{id}/start (POST), /api/tasks/{id}/done (POST)
-    Bu Cowork yoki boshqa tashqi avtomatlashtirish tizimlari topshiriqlarni login/parolsiz,
-    doimiy 'Authorization: Bearer <SERVICE_API_KEY>' header'i orqali boshqarishi uchun qo'shilgan.
+      /api/admin/groups/bulk-sync (POST), /api/admin/students/bulk-sync (POST)
+    Bu Cowork yoki boshqa tashqi avtomatlashtirish tizimlari (masalan LC-UP sinxronizatsiyasi)
+    topshiriqlarni va guruh/talaba ma'lumotlarini login/parolsiz, doimiy
+    'Authorization: Bearer <SERVICE_API_KEY>' header'i orqali boshqarishi uchun qo'shilgan.
     Boshqa barcha endpoint'lar hamon FAQAT get_current_employee() (login/parol sessiyasi) orqali
     ishlaydi — bu funksiya ularga ta'sir qilmaydi.
 
-    Kalit to'g'ri bo'lsa, ADMIN_TEACHER_ID xodimi (CEO) nomidan harakat qiladi va shu 4 ta
-    endpoint'dagi rol/egalik cheklovlari (masalan, faqat topshiriq egasi "Bajarildi" bosishi)
-    chetlab o'tiladi — chunki xizmat kaliti administrator darajasidagi ishonchli avtomatlashtirish
-    uchun mo'ljallangan.
+    Kalit to'g'ri bo'lsa, ADMIN_TEACHER_ID xodimi (CEO) nomidan harakat qiladi va shu
+    endpoint'lardagi rol/egalik cheklovlari (masalan, faqat topshiriq egasi "Bajarildi" bosishi,
+    yoki require_owner) chetlab o'tiladi — chunki xizmat kaliti administrator darajasidagi
+    ishonchli avtomatlashtirish uchun mo'ljallangan.
 
     Qaytaradi: (xodim_dict, is_service: bool)
     """
@@ -3550,6 +3552,82 @@ async def api_admin_add_group(request: Request, x_telegram_init_data: str = Head
         raise HTTPException(status_code=400, detail="O'qituvchi tanlanishi shart")
     group_id = db.add_group(teacher_id=teacher_id, name=name, course=body.get("course"))
     return {"ok": True, "id": group_id}
+
+
+@app.post("/api/admin/groups/bulk-sync")
+async def api_admin_groups_bulk_sync(
+    request: Request, x_telegram_init_data: str = Header(None), authorization: str = Header(None)
+):
+    """Tashqi sinxronizatsiya (masalan LC-UP) uchun — [{name, teacher_full_name, course,
+    price, room, schedule_days}] massivini qabul qiladi. Guruh nomi + o'qituvchi bo'yicha
+    mavjudini yangilaydi, topilmasa yangi yaratadi. Har bir yozuv uchun natijani
+    ("created"/"updated"/"teacher_not_found") qaytaradi."""
+    emp, is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
+    if not is_service:
+        require_owner(emp)
+    items = await request.json()
+
+    results = []
+    for it in items:
+        name = (it.get("name") or "").strip()
+        teacher = db.get_employee_by_full_name(it.get("teacher_full_name") or "")
+        if not name or not teacher:
+            results.append({"name": name, "result": "teacher_not_found"})
+            continue
+
+        existing = db.get_group_by_name_and_teacher(teacher["teacher_id"], name)
+        if existing:
+            db.update_group(
+                existing["id"], course=it.get("course"), price=it.get("price"),
+                room=it.get("room"), lesson_days=it.get("schedule_days"),
+            )
+            results.append({"name": name, "result": "updated"})
+        else:
+            db.add_group(
+                teacher_id=teacher["teacher_id"], name=name, course=it.get("course"),
+                price=it.get("price"), room=it.get("room"), lesson_days=it.get("schedule_days"),
+            )
+            results.append({"name": name, "result": "created"})
+
+    return {"results": results}
+
+
+@app.post("/api/admin/students/bulk-sync")
+async def api_admin_students_bulk_sync(
+    request: Request, x_telegram_init_data: str = Header(None), authorization: str = Header(None)
+):
+    """Tashqi sinxronizatsiya (masalan LC-UP) uchun — [{full_name, group_name,
+    teacher_full_name}] massivini qabul qiladi. Guruh ichida ism bo'yicha mavjudini
+    tekshiradi, topilmasa yangi o'quvchi yaratadi (guruhga biriktirilgan holda). Har bir
+    yozuv uchun natijani ("created"/"exists"/"teacher_not_found"/"group_not_found")
+    qaytaradi."""
+    emp, is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
+    if not is_service:
+        require_owner(emp)
+    items = await request.json()
+
+    results = []
+    for it in items:
+        full_name = (it.get("full_name") or "").strip()
+        teacher = db.get_employee_by_full_name(it.get("teacher_full_name") or "")
+        if not full_name or not teacher:
+            results.append({"full_name": full_name, "result": "teacher_not_found"})
+            continue
+
+        group = db.get_group_by_name_and_teacher(teacher["teacher_id"], it.get("group_name") or "")
+        if not group:
+            results.append({"full_name": full_name, "result": "group_not_found"})
+            continue
+
+        existing = db.get_student_by_name_and_group(group["id"], full_name)
+        if existing:
+            results.append({"full_name": full_name, "result": "exists"})
+        else:
+            student_id = db.add_student(teacher_id=teacher["teacher_id"], full_name=full_name)
+            db.set_student_group(student_id, group["id"])
+            results.append({"full_name": full_name, "result": "created"})
+
+    return {"results": results}
 
 
 @app.get("/api/admin/courses")

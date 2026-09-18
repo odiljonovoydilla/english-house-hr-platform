@@ -2621,6 +2621,10 @@ def _all_students_where(q=None, phone=None, parent_phone=None, group_id=None,
         params.append(teacher_id)
     if status == "archived":
         clauses.append("s.active=0")
+    elif status == "faol":
+        # status ustuni bu funksiyadan oldin qo'shilgan eski talabalarda NULL bo'lishi mumkin —
+        # hech kim aniq "qarzdor/sinov/muzlatilgan" deb belgilamagan faol talaba "faol" hisoblanadi.
+        clauses.append("s.active=1 AND (s.status='faol' OR s.status IS NULL OR s.status='')")
     elif status:
         clauses.append("s.active=1 AND s.status=?")
         params.append(status)
@@ -2720,12 +2724,13 @@ def set_student_tags(student_id: int, tag_ids: list):
 
 def students_summary():
     total_active = _conn.execute(
-        "SELECT COUNT(*) AS c FROM students WHERE active=1 AND status='faol'"
+        "SELECT COUNT(*) AS c FROM students WHERE active=1 AND (status='faol' OR status IS NULL OR status='')"
     ).fetchone()["c"]
     by_course = _conn.execute("""
         SELECT g.course AS course, COUNT(*) AS c
         FROM students s JOIN student_groups g ON g.id = s.group_id
-        WHERE s.active=1 AND s.status='faol' AND g.course IS NOT NULL AND g.course != ''
+        WHERE s.active=1 AND (s.status='faol' OR s.status IS NULL OR s.status='')
+              AND g.course IS NOT NULL AND g.course != ''
         GROUP BY g.course
         ORDER BY c DESC
     """).fetchall()

@@ -2422,6 +2422,22 @@ def api_reports_kpi_summary(month: str, x_telegram_init_data: str = Header(None)
         "trend": trend,
     }
 
+
+@app.get("/api/reports/course-average-score")
+def api_course_average_score(month: str, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    rows = db.course_average_scores(month)
+    items = [
+        {"course": r["course"], "avg_score": round(r["avg_score"], 2),
+         "student_count": r["student_count"], "group_count": r["group_count"]}
+        for r in rows
+    ]
+    total_grades = sum(r["grade_count"] for r in rows)
+    overall_avg = round(sum(r["avg_score"] * r["grade_count"] for r in rows) / total_grades, 2) if total_grades else None
+    return {"month": month, "items": items, "overall_avg": overall_avg}
+
+
 @app.get("/api/settings")
 def api_get_settings(x_telegram_init_data: str = Header(None)):
     emp = get_current_employee(x_telegram_init_data)

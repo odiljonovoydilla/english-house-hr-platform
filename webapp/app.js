@@ -6914,6 +6914,14 @@ function renderReportsHome(box) {
         </div>
         <div class="menu-arrow">›</div>
       </div>
+      <div class="menu-card" data-nav="courseScores">
+        <div class="menu-icon">📊</div>
+        <div class="menu-text">
+          <div class="menu-label">Kurs bo'yicha ball</div>
+          <div class="menu-desc">Har kurs uchun oylik o'rtacha baho</div>
+        </div>
+        <div class="menu-arrow">›</div>
+      </div>
     </div>
   `;
 
@@ -6923,6 +6931,7 @@ function renderReportsHome(box) {
       else if (card.dataset.nav === "scorecard") renderScorecardReportSection(box);
       else if (card.dataset.nav === "tasks") renderTasksReportSection(box);
       else if (card.dataset.nav === "rating") renderTasksRatingSection(box);
+      else if (card.dataset.nav === "courseScores") renderCourseScoresSection(box);
       else renderCompanyReportSection(box);
     });
   });
@@ -7144,6 +7153,57 @@ async function renderTasksReportContent(box) {
 
   startInput.addEventListener("change", load);
   endInput.addEventListener("change", load);
+  await load();
+}
+
+async function renderCourseScoresSection(box) {
+  box.innerHTML = `<button class="back-btn" id="csBackBtn">← Orqaga</button><div id="csInner"></div>`;
+  box.querySelector("#csBackBtn").addEventListener("click", () => renderReportsHome(box));
+  await renderCourseScoresContent(box.querySelector("#csInner"));
+}
+
+async function renderCourseScoresContent(box) {
+  box.innerHTML = `
+    <h2>📊 Kurs bo'yicha ball</h2>
+    ${_monthSelectHtml("csMonth")}
+    <div id="csResult"><div class="center-box"><div class="spinner"></div></div></div>
+  `;
+  const select = box.querySelector("#csMonth");
+
+  async function load() {
+    const resultBox = box.querySelector("#csResult");
+    resultBox.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    try {
+      const d = await api(`/api/reports/course-average-score?month=${select.value}`);
+      const rowsHtml = d.items.length
+        ? d.items.map((it) => `
+            <tr>
+              <td>${it.course}</td>
+              <td>${it.avg_score}</td>
+              <td>${it.student_count}</td>
+              <td>${it.group_count}</td>
+            </tr>
+          `).join("")
+        : `<tr><td colspan="4" style="text-align:center;color:var(--hint);">Ma'lumot yo'q</td></tr>`;
+
+      resultBox.innerHTML = `
+        <div class="total-box">
+          <div class="caption">${d.month} — barcha kurslar bo'yicha o'rtacha ball</div>
+          <div class="amount">${d.overall_avg !== null ? d.overall_avg : "-"}</div>
+        </div>
+        <div class="card" style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Kurs</th><th>O'rtacha ball</th><th>O'quvchilar soni</th><th>Guruhlar soni</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+      `;
+    } catch (err) {
+      resultBox.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  select.addEventListener("change", load);
   await load();
 }
 

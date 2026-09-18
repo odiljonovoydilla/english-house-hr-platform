@@ -2847,6 +2847,24 @@ def _pivot_list(table: str, group_id: int, dates: list):
     ).fetchall()
 
 
+def course_average_scores(month: str):
+    """Oy (YYYY-MM) bo'yicha har kurs uchun o'rtacha baho, o'quvchi va guruh soni.
+    lesson_date 'YYYY-MM-DD' prefiksi bo'yicha filtrlanadi."""
+    return _conn.execute("""
+        SELECT g.course AS course,
+               AVG(gg.score) AS avg_score,
+               COUNT(DISTINCT gg.student_id) AS student_count,
+               COUNT(DISTINCT gg.group_id) AS group_count,
+               COUNT(gg.score) AS grade_count
+        FROM group_grades gg
+        JOIN student_groups g ON g.id = gg.group_id
+        WHERE gg.lesson_date LIKE ? AND gg.score IS NOT NULL
+          AND g.course IS NOT NULL AND g.course != ''
+        GROUP BY g.course
+        ORDER BY avg_score DESC
+    """, (f"{month}-%",)).fetchall()
+
+
 def set_attendance(group_id: int, student_id: int, lesson_date: str, status: str, reason: str = None):
     now = now_iso()
     _conn.execute("""

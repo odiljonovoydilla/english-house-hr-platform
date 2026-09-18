@@ -637,6 +637,22 @@ def init_db():
     _add_column_if_missing("student_groups", "start_date", "TEXT")
     _add_column_if_missing("student_groups", "end_date", "TEXT")
 
+    # Teglar — "Talabalar" bo'limida (kompaniya darajasida) talabalarni erkin belgilash uchun
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS student_tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        created_at TEXT
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS student_tag_links (
+        student_id INTEGER NOT NULL,
+        tag_id INTEGER NOT NULL,
+        PRIMARY KEY (student_id, tag_id)
+    )
+    """)
+
     # Guruh ichidagi kunlik dars ustuniga biriktirilgan Unit (Mashqlar bo'limi uchun)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS group_lesson_units (
@@ -2436,6 +2452,30 @@ def deactivate_student(student_id: int):
     _conn.commit()
 
 
+def reactivate_student(student_id: int):
+    _conn.execute("UPDATE students SET active=1, updated_at=? WHERE id=?", (now_iso(), student_id))
+    _conn.commit()
+
+
+def reassign_student_teacher(student_id: int, teacher_id: str):
+    """Talabani boshqa o'qituvchining ro'yxatiga o'tkazadi (CEO/Direktor uchun) — eski guruhdan chiqaradi,
+    chunki guruh eski o'qituvchiga tegishli bo'lib qolaveradi."""
+    _conn.execute(
+        "UPDATE students SET teacher_id=?, group_id=NULL, updated_at=? WHERE id=?",
+        (teacher_id, now_iso(), student_id)
+    )
+    _conn.commit()
+
+
+def get_student_tags(student_id: int):
+    return _conn.execute("""
+        SELECT t.id, t.name FROM student_tag_links stl
+        JOIN student_tags t ON t.id = stl.tag_id
+        WHERE stl.student_id=?
+        ORDER BY t.name COLLATE NOCASE
+    """, (student_id,)).fetchall()
+
+
 def set_student_group(student_id: int, group_id):
     """group_id None bo'lsa — o'quvchi guruhdan chiqariladi (guruhsiz holatga qaytadi)."""
     _conn.execute(
@@ -2547,6 +2587,149 @@ def assign_students_to_group(teacher_id: str, group_id: int, student_ids: list):
         [group_id, now, teacher_id] + list(student_ids)
     )
     _conn.commit()
+
+
+# ---------- TALABALAR (kompaniya darajasida — CEO/Direktor uchun "Talabalar" bo'limi) ----------
+# Barcha o'qituvchilarning shaxsiy o'quvchilar bazasini (yuqoridagi `students`/`student_groups`)
+# birlashtirib ko'rsatadi — alohida jadval emas, faqat teacher_id bo'yicha cheklanmagan so'rovlar.
+# Teglar — bu yerda birinchi marta qo'shilyapti, chunki mavjud sxemada teg tushunchasi yo'q edi.
+
+def _digits_only(s: str) -> str:
+    return "".join(ch for ch in (s or "") if ch.isdigit())
+
+
+def _all_students_where(q=None, phone=None, parent_phone=None, group_id=None,
+                         course=None, teacher_id=None, tag_ids=None, status=None):
+    clauses, params = [], []
+    if q:
+        clauses.append("s.full_name LIKE ?")
+        params.append(f"%{q}%")
+    if phone:
+        clauses.append("REPLACE(s.phone, '+', '') LIKE ?")
+        params.append(f"%{_digits_only(phone)}%")
+    if parent_phone:
+        clauses.append("REPLACE(s.phone2, '+', '') LIKE ?")
+        params.append(f"%{_digits_only(parent_phone)}%")
+    if group_id:
+        clauses.append("s.group_id=?")
+        params.append(group_id)
+    if course:
+        clauses.append("g.course=?")
+        params.append(course)
+    if teacher_id:
+        clauses.append("s.teacher_id=?")
+        params.append(teacher_id)
+    if status == "archived":
+        clauses.append("s.active=0")
+    elif status:
+        clauses.append("s.active=1 AND s.status=?")
+        params.append(status)
+    if tag_ids:
+        placeholders = ",".join("?" * len(tag_ids))
+        clauses.append(
+            f"EXISTS (SELECT 1 FROM student_tag_links stl WHERE stl.student_id=s.id AND stl.tag_id IN ({placeholders}))"
+        )
+        params.extend(tag_ids)
+    where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where_sql, params
+
+
+def count_all_students(**filters) -> int:
+    where_sql, params = _all_students_where(**filters)
+    return _conn.execute(f"""
+        SELECT COUNT(*) AS c FROM students s
+        LEFT JOIN student_groups g ON g.id = s.group_id
+        {where_sql}
+    """, params).fetchone()["c"]
+
+
+def list_all_students(limit: int = 20, offset: int = 0, **filters):
+    where_sql, params = _all_students_where(**filters)
+    rows = _conn.execute(f"""
+        SELECT s.*, g.name AS group_name, g.course AS group_course, e.full_name AS teacher_name
+        FROM students s
+        LEFT JOIN student_groups g ON g.id = s.group_id
+        LEFT JOIN employees e ON e.teacher_id = s.teacher_id
+        {where_sql}
+        ORDER BY s.full_name COLLATE NOCASE
+        LIMIT ? OFFSET ?
+    """, params + [limit, offset]).fetchall()
+
+    items = [dict(r) for r in rows]
+    ids = [it["id"] for it in items]
+    tags_by_student = {}
+    if ids:
+        placeholders = ",".join("?" * len(ids))
+        trows = _conn.execute(f"""
+            SELECT stl.student_id, t.name FROM student_tag_links stl
+            JOIN student_tags t ON t.id = stl.tag_id
+            WHERE stl.student_id IN ({placeholders})
+        """, ids).fetchall()
+        for r in trows:
+            tags_by_student.setdefault(r["student_id"], []).append(r["name"])
+    for it in items:
+        it["tags"] = tags_by_student.get(it["id"], [])
+    return items
+
+
+def list_all_groups():
+    return _conn.execute("""
+        SELECT g.*, e.full_name AS teacher_name
+        FROM student_groups g
+        LEFT JOIN employees e ON e.teacher_id = g.teacher_id
+        WHERE g.active=1
+        ORDER BY g.name COLLATE NOCASE
+    """).fetchall()
+
+
+def list_all_courses():
+    return _conn.execute("""
+        SELECT DISTINCT course FROM student_groups
+        WHERE course IS NOT NULL AND course != ''
+        ORDER BY course COLLATE NOCASE
+    """).fetchall()
+
+
+def list_teachers_for_filter():
+    return _conn.execute("""
+        SELECT * FROM employees WHERE role IN ('Teacher','SubjectTeacher') AND active=1
+        ORDER BY full_name COLLATE NOCASE
+    """).fetchall()
+
+
+def list_tags():
+    return _conn.execute("SELECT * FROM student_tags ORDER BY name COLLATE NOCASE").fetchall()
+
+
+def add_tag(name: str):
+    _conn.execute(
+        "INSERT OR IGNORE INTO student_tags (name, created_at) VALUES (?, ?)", (name, now_iso())
+    )
+    _conn.commit()
+    return _conn.execute("SELECT id FROM student_tags WHERE name=?", (name,)).fetchone()["id"]
+
+
+def set_student_tags(student_id: int, tag_ids: list):
+    _conn.execute("DELETE FROM student_tag_links WHERE student_id=?", (student_id,))
+    for tid in tag_ids:
+        _conn.execute(
+            "INSERT OR IGNORE INTO student_tag_links (student_id, tag_id) VALUES (?, ?)", (student_id, tid)
+        )
+    _conn.commit()
+
+
+def students_summary():
+    total_active = _conn.execute(
+        "SELECT COUNT(*) AS c FROM students WHERE active=1 AND status='faol'"
+    ).fetchone()["c"]
+    by_course = _conn.execute("""
+        SELECT g.course AS course, COUNT(*) AS c
+        FROM students s JOIN student_groups g ON g.id = s.group_id
+        WHERE s.active=1 AND s.status='faol' AND g.course IS NOT NULL AND g.course != ''
+        GROUP BY g.course
+        ORDER BY c DESC
+    """).fetchall()
+    return {"total_active": total_active, "by_course": [dict(r) for r in by_course]}
 
 
 # ---------- GURUH ICHI: dars sanalari (lesson_days'dan hisoblanadi, saqlanmaydi) ----------

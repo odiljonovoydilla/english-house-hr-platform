@@ -1470,6 +1470,7 @@ const ADMIN_TABS = [
   { id: "moliya", icon: "💰", label: "Moliya", desc: "Ish haqi, tushum va kompaniya moliyasi" },
   { id: "scorecard", icon: "✏️", label: "Scorecard", desc: "Xodimlarni KPI bo'yicha baholash" },
   { id: "employees", icon: "👥", label: "Xodimlar", desc: "Xodimlarni qo'shish va boshqarish" },
+  { id: "talabalar", icon: "🎒", label: "Talabalar", desc: "Barcha o'qituvchilarning talabalari — filtr, guruh, holat" },
   { id: "reports", icon: "📑", label: "Hisobotlar", desc: "O'qituvchi, Scorecard va Kompaniya hisobotlari" },
   { id: "tasks", icon: "📋", label: "Topshiriqlar", desc: "Xodimlar orasidagi buyruq va xabarlar" },
   { id: "rules", icon: "📜", label: "Asosiy qoidalar", desc: "Teacher va Edu Manager KPI qanday hisoblanadi" },
@@ -1519,6 +1520,7 @@ async function renderAdminTab(tab, box, me) {
     else if (tab === "moliya") await renderMoliyaTab(box);
     else if (tab === "scorecard") await renderScorecardTab(box, me);
     else if (tab === "employees") await renderEmployeesTab(box, me);
+    else if (tab === "talabalar") await renderStudentsAdminTab(box, me);
     else if (tab === "reports") await renderReportsTab(box);
     else if (tab === "tasks") await renderTasksTab(box, me);
     else if (tab === "rules") await renderKpiRulesTab(box);
@@ -1526,6 +1528,520 @@ async function renderAdminTab(tab, box, me) {
   } catch (err) {
     box.innerHTML = `<div class="error-box">${err.message}</div>`;
   }
+}
+
+// ============================================================
+// TALABALAR (kompaniya darajasida) — CEO / Direktor
+// Barcha o'qituvchilarning students/student_groups yozuvlarini birlashtirib ko'rsatadi.
+// ============================================================
+
+const STUDENT_STATUS_LABELS = { faol: "Faol", qarzdor: "Qarzdor", sinov: "Sinov", muzlatilgan: "Muzlatilgan" };
+
+const SA_ALL_COLUMNS = [
+  { key: "idx", label: "T/R", alwaysOn: true },
+  { key: "full_name", label: "FISH", alwaysOn: true },
+  { key: "phone", label: "Telefon raqam" },
+  { key: "group", label: "Guruh" },
+  { key: "status", label: "Holat" },
+  { key: "teacher", label: "O'qituvchi" },
+];
+
+function _saHiddenCols() {
+  try { return JSON.parse(localStorage.getItem("saHiddenCols") || "[]"); } catch { return []; }
+}
+function _saSaveHiddenCols(hidden) {
+  try { localStorage.setItem("saHiddenCols", JSON.stringify(hidden)); } catch {}
+}
+
+function _saStatusCell(s) {
+  if (!s.active) return `<span class="badge neutral">Arxivlangan</span>`;
+  const label = STUDENT_STATUS_LABELS[s.status] || "—";
+  return s.status
+    ? `<span class="status-dot status-${s.status}"></span> ${label}`
+    : `<span class="badge neutral">Belgilanmagan</span>`;
+}
+
+function _saCell(key, s, i, state) {
+  if (key === "idx") return String((state.page - 1) * state.pageSize + i + 1);
+  if (key === "full_name") return s.full_name;
+  if (key === "phone") return s.phone || "-";
+  if (key === "group") return s.group_name || "-";
+  if (key === "status") return _saStatusCell(s);
+  if (key === "teacher") return s.teacher_name || "-";
+  return "-";
+}
+
+async function renderStudentsAdminTab(box, me) {
+  const state = {
+    page: 1,
+    pageSize: 20,
+    filters: { q: "", phone: "", parent_phone: "", group_id: "", course: "", teacher_id: "", tag_ids: [], status: "faol" },
+    total: 0,
+    groups: [],
+    courses: [],
+    teachers: [],
+    tags: [],
+    hiddenCols: _saHiddenCols(),
+  };
+
+  box.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-weight:700;font-size:15px;">Talabalar ro'yxati</span>
+        <select id="saPageSize" style="width:auto;margin:0;">
+          <option value="20">20 / sahifa</option>
+          <option value="50">50 / sahifa</option>
+          <option value="100">100 / sahifa</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="secondary" id="saSummaryBtn" style="width:auto;margin-top:0;">📊 Aktiv talabalar hisoboti</button>
+        <button class="primary" id="saAddBtn" style="width:auto;margin-top:0;">+ Yangi talaba qo'shish</button>
+      </div>
+    </div>
+
+    <div class="card" style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;">
+      <div style="flex:1;min-width:130px;">
+        <label>Ism orqali qidirish</label>
+        <input type="text" id="saFq" placeholder="Ism..." />
+      </div>
+      <div style="flex:1;min-width:130px;">
+        <label>Telefon raqam</label>
+        <input type="text" id="saFphone" placeholder="90 123 45 67" />
+      </div>
+      <div style="flex:1;min-width:130px;">
+        <label>Ota-ona raqami</label>
+        <input type="text" id="saFparentPhone" placeholder="90 123 45 67" />
+      </div>
+      <div style="flex:1;min-width:150px;">
+        <label>Guruhni tanlang</label>
+        <select id="saFgroup"><option value="">Barchasi</option></select>
+      </div>
+      <div style="flex:1;min-width:150px;">
+        <label>Kurs bo'yicha</label>
+        <select id="saFcourse"><option value="">Barchasi</option></select>
+      </div>
+      <div style="flex:1;min-width:150px;">
+        <label>O'qituvchi bo'yicha</label>
+        <select id="saFteacher"><option value="">Barchasi</option></select>
+      </div>
+      <div style="flex:1;min-width:150px;">
+        <label>Teglar bo'yicha</label>
+        <select id="saFtags" multiple size="3"></select>
+      </div>
+      <div style="flex:1;min-width:150px;">
+        <label>Holat</label>
+        <select id="saFstatus">
+          <option value="all">Barcha talabalar</option>
+          <option value="faol" selected>Faol</option>
+          <option value="qarzdor">Qarzdor</option>
+          <option value="sinov">Sinov</option>
+          <option value="muzlatilgan">Muzlatilgan</option>
+          <option value="archived">Arxivlangan</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button class="secondary" id="saClearBtn" style="width:auto;margin-top:0;">Tozalash</button>
+        <button class="icon-btn" id="saColsBtn" title="Ustunlar">⚙</button>
+      </div>
+    </div>
+    <div id="saColsPanel" class="card" style="display:none;"></div>
+
+    <div id="saTotalLine" style="margin:10px 2px;font-size:13px;color:var(--text-muted);">Jami: —</div>
+    <div id="saTableWrap"><div class="center-box"><div class="spinner"></div></div></div>
+    <div id="saPagerWrap" style="display:flex;justify-content:center;gap:10px;align-items:center;margin:10px 0;"></div>
+    <div id="saFormWrap"></div>
+  `;
+
+  const tableWrap = box.querySelector("#saTableWrap");
+  const pagerWrap = box.querySelector("#saPagerWrap");
+  const totalLine = box.querySelector("#saTotalLine");
+  const formWrap = box.querySelector("#saFormWrap");
+  const colsPanel = box.querySelector("#saColsPanel");
+
+  function renderColsPanel() {
+    colsPanel.innerHTML = SA_ALL_COLUMNS.filter((c) => !c.alwaysOn).map((c) => `
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px;font-weight:400;">
+        <input type="checkbox" data-col="${c.key}" ${state.hiddenCols.includes(c.key) ? "" : "checked"} />
+        ${c.label}
+      </label>
+    `).join("");
+    colsPanel.querySelectorAll("input[data-col]").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const key = cb.dataset.col;
+        state.hiddenCols = cb.checked
+          ? state.hiddenCols.filter((k) => k !== key)
+          : [...state.hiddenCols, key];
+        _saSaveHiddenCols(state.hiddenCols);
+        renderTable();
+      });
+    });
+  }
+  renderColsPanel();
+  box.querySelector("#saColsBtn").addEventListener("click", () => {
+    colsPanel.style.display = colsPanel.style.display === "none" ? "block" : "none";
+  });
+
+  function renderTable(items) {
+    items = items || state._lastItems || [];
+    state._lastItems = items;
+    const visible = SA_ALL_COLUMNS.filter((c) => c.alwaysOn || !state.hiddenCols.includes(c.key));
+    if (!items.length) {
+      tableWrap.innerHTML = `<div class="card" style="text-align:center;color:var(--text-muted);">Talaba topilmadi</div>`;
+      return;
+    }
+    tableWrap.innerHTML = `
+      <div class="card" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr>${visible.map((c) => `<th style="padding:10px 12px;">${c.label}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${items.map((s, i) => `
+              <tr data-id="${s.id}" style="cursor:pointer;">
+                ${visible.map((c) => `<td style="padding:10px 12px;">${_saCell(c.key, s, i, state)}</td>`).join("")}
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+    tableWrap.querySelectorAll("tr[data-id]").forEach((tr) => {
+      tr.addEventListener("click", () => openStudentAdminForm(Number(tr.dataset.id)));
+    });
+  }
+
+  function renderPager() {
+    const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
+    pagerWrap.innerHTML = `
+      <button class="mini-btn" id="saPrev" ${state.page <= 1 ? "disabled" : ""}>‹ Oldingi</button>
+      <span style="font-size:13px;color:var(--text-muted);">${state.page} / ${pages}</span>
+      <button class="mini-btn" id="saNext" ${state.page >= pages ? "disabled" : ""}>Keyingi ›</button>
+    `;
+    pagerWrap.querySelector("#saPrev").addEventListener("click", () => { state.page--; loadList(); });
+    pagerWrap.querySelector("#saNext").addEventListener("click", () => { state.page++; loadList(); });
+  }
+
+  async function loadRefData() {
+    const [groups, courses, teachers, tags] = await Promise.all([
+      api("/api/admin/groups"),
+      api("/api/admin/courses"),
+      api("/api/admin/teachers"),
+      api("/api/admin/tags"),
+    ]);
+    state.groups = groups;
+    state.courses = courses;
+    state.teachers = teachers;
+    state.tags = tags;
+
+    const gSel = box.querySelector("#saFgroup");
+    const prevG = gSel.value;
+    gSel.innerHTML = `<option value="">Barchasi</option>` + groups.map((g) => `<option value="${g.id}">${g.name}${g.teacher_name ? " (" + g.teacher_name + ")" : ""}</option>`).join("");
+    gSel.value = prevG;
+
+    const cSel = box.querySelector("#saFcourse");
+    const prevC = cSel.value;
+    cSel.innerHTML = `<option value="">Barchasi</option>` + courses.map((c) => `<option value="${c.course}">${c.course}</option>`).join("");
+    cSel.value = prevC;
+
+    const tSel = box.querySelector("#saFteacher");
+    const prevT = tSel.value;
+    tSel.innerHTML = `<option value="">Barchasi</option>` + teachers.map((t) => `<option value="${t.teacher_id}">${t.full_name}</option>`).join("");
+    tSel.value = prevT;
+
+    const tagSel = box.querySelector("#saFtags");
+    tagSel.innerHTML = tags.map((t) => `<option value="${t.id}">${t.name}</option>`).join("");
+  }
+
+  async function loadList() {
+    tableWrap.innerHTML = `<div class="center-box"><div class="spinner"></div></div>`;
+    const params = new URLSearchParams();
+    params.set("page", state.page);
+    params.set("page_size", state.pageSize);
+    params.set("status", state.filters.status);
+    if (state.filters.q) params.set("q", state.filters.q);
+    if (state.filters.phone) params.set("phone", state.filters.phone);
+    if (state.filters.parent_phone) params.set("parent_phone", state.filters.parent_phone);
+    if (state.filters.group_id) params.set("group_id", state.filters.group_id);
+    if (state.filters.course) params.set("course", state.filters.course);
+    if (state.filters.teacher_id) params.set("teacher_id", state.filters.teacher_id);
+    if (state.filters.tag_ids.length) params.set("tag_ids", state.filters.tag_ids.join(","));
+
+    try {
+      const res = await api(`/api/admin/students?${params.toString()}`);
+      state.total = res.total;
+      totalLine.textContent = `Jami: ${res.total}`;
+      renderTable(res.items);
+      renderPager();
+    } catch (err) {
+      tableWrap.innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+
+  let debounceTimer;
+  function debouncedReload() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => { state.page = 1; loadList(); }, 350);
+  }
+
+  box.querySelector("#saFq").addEventListener("input", (e) => { state.filters.q = e.target.value.trim(); debouncedReload(); });
+  box.querySelector("#saFphone").addEventListener("input", (e) => { state.filters.phone = e.target.value.trim(); debouncedReload(); });
+  box.querySelector("#saFparentPhone").addEventListener("input", (e) => { state.filters.parent_phone = e.target.value.trim(); debouncedReload(); });
+  box.querySelector("#saFgroup").addEventListener("change", (e) => { state.filters.group_id = e.target.value; state.page = 1; loadList(); });
+  box.querySelector("#saFcourse").addEventListener("change", (e) => { state.filters.course = e.target.value; state.page = 1; loadList(); });
+  box.querySelector("#saFteacher").addEventListener("change", (e) => { state.filters.teacher_id = e.target.value; state.page = 1; loadList(); });
+  box.querySelector("#saFtags").addEventListener("change", (e) => {
+    state.filters.tag_ids = [...e.target.selectedOptions].map((o) => o.value);
+    state.page = 1; loadList();
+  });
+  box.querySelector("#saFstatus").addEventListener("change", (e) => { state.filters.status = e.target.value; state.page = 1; loadList(); });
+  box.querySelector("#saPageSize").addEventListener("change", (e) => { state.pageSize = Number(e.target.value); state.page = 1; loadList(); });
+  box.querySelector("#saClearBtn").addEventListener("click", () => {
+    state.filters = { q: "", phone: "", parent_phone: "", group_id: "", course: "", teacher_id: "", tag_ids: [], status: "faol" };
+    box.querySelector("#saFq").value = "";
+    box.querySelector("#saFphone").value = "";
+    box.querySelector("#saFparentPhone").value = "";
+    box.querySelector("#saFgroup").value = "";
+    box.querySelector("#saFcourse").value = "";
+    box.querySelector("#saFteacher").value = "";
+    [...box.querySelector("#saFtags").options].forEach((o) => (o.selected = false));
+    box.querySelector("#saFstatus").value = "faol";
+    state.page = 1;
+    loadList();
+  });
+
+  async function showStudentsSummaryModal() {
+    const overlay = el(`
+      <div class="modal-overlay">
+        <div class="modal-box">
+          <h3>📊 Aktiv talabalar hisoboti</h3>
+          <div id="saSummaryContent"><div class="center-box"><div class="spinner"></div></div></div>
+          <div class="modal-actions">
+            <button class="secondary" id="saSummaryClose">Yopish</button>
+          </div>
+        </div>
+      </div>
+    `);
+    document.body.appendChild(overlay);
+    overlay.querySelector("#saSummaryClose").addEventListener("click", () => overlay.remove());
+    try {
+      const summary = await api("/api/admin/students/summary");
+      overlay.querySelector("#saSummaryContent").innerHTML = `
+        <p style="font-size:15px;">Jami faol talabalar: <b>${summary.total_active}</b></p>
+        ${summary.by_course.length ? `
+          <table>
+            <thead><tr><th>Kurs</th><th>Soni</th></tr></thead>
+            <tbody>
+              ${summary.by_course.map((c) => `<tr><td>${c.course}</td><td>${c.c}</td></tr>`).join("")}
+            </tbody>
+          </table>
+        ` : `<p style="color:var(--text-muted);">Guruhga biriktirilgan faol talaba yo'q</p>`}
+      `;
+    } catch (err) {
+      overlay.querySelector("#saSummaryContent").innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
+  }
+  box.querySelector("#saSummaryBtn").addEventListener("click", showStudentsSummaryModal);
+
+  async function openStudentAdminForm(studentId) {
+    let student = null;
+    if (studentId) {
+      try {
+        student = await api(`/api/admin/students/${studentId}`);
+      } catch (err) {
+        showToast(err.message, "error");
+        return;
+      }
+    }
+    _renderStudentAdminForm(formWrap, student, state, {
+      onSaved: async () => { formWrap.innerHTML = ""; await loadRefData(); await loadList(); },
+      onCancel: () => { formWrap.innerHTML = ""; },
+      onArchived: async () => { formWrap.innerHTML = ""; await loadList(); },
+    });
+    formWrap.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  box.querySelector("#saAddBtn").addEventListener("click", () => openStudentAdminForm(null));
+
+  await loadRefData();
+  await loadList();
+}
+
+function _renderStudentAdminForm(container, student, state, callbacks) {
+  const isEdit = !!student;
+  const selectedTagIds = isEdit ? student.tags.map((t) => String(t.id)) : [];
+  const currentGroupId = isEdit ? student.group_id : null;
+
+  container.innerHTML = `
+    <div class="card">
+      <h3 style="margin-top:0;">${isEdit ? "✏️ Talabani tahrirlash" : "+ Yangi talaba qo'shish"}</h3>
+      <label>FISH *</label>
+      <input type="text" id="saf_full_name" value="${isEdit ? student.full_name : ""}" />
+
+      <label>O'qituvchi (ro'yxat egasi) *</label>
+      <select id="saf_teacher">
+        <option value="">Tanlanmagan</option>
+        ${state.teachers.map((t) => `<option value="${t.teacher_id}" ${isEdit && student.teacher_id === t.teacher_id ? "selected" : ""}>${t.full_name}</option>`).join("")}
+      </select>
+
+      <label>Telefon raqam</label>
+      <input type="text" id="saf_phone" placeholder="+998 XX XXX XX XX" value="${isEdit && student.phone ? student.phone : ""}" />
+      <label>Qo'shimcha / ota-ona raqami</label>
+      <input type="text" id="saf_phone2" placeholder="+998 XX XXX XX XX" value="${isEdit && student.phone2 ? student.phone2 : ""}" />
+      <label>Ota-onasi ismi</label>
+      <input type="text" id="saf_parent_name" value="${isEdit && student.parent_name ? student.parent_name : ""}" />
+      <label>Kurs</label>
+      <input type="text" id="saf_course" list="saf_course_list" value="${isEdit && student.course ? student.course : ""}" />
+      <datalist id="saf_course_list">
+        ${state.courses.map((c) => `<option value="${c.course}"></option>`).join("")}
+      </datalist>
+
+      <label>Holat</label>
+      <select id="saf_status">
+        <option value="faol" ${!isEdit || student.status === "faol" ? "selected" : ""}>Faol</option>
+        <option value="qarzdor" ${isEdit && student.status === "qarzdor" ? "selected" : ""}>Qarzdor</option>
+        <option value="sinov" ${isEdit && student.status === "sinov" ? "selected" : ""}>Sinov</option>
+        <option value="muzlatilgan" ${isEdit && student.status === "muzlatilgan" ? "selected" : ""}>Muzlatilgan</option>
+      </select>
+
+      <label>Guruh <span style="font-weight:400;">(avval o'qituvchi tanlang)</span></label>
+      <select id="saf_group">
+        <option value="">Guruhsiz</option>
+      </select>
+      <button type="button" class="mini-btn" id="saf_newGroupToggle">+ Yangi guruh</button>
+      <div id="saf_newGroupBox" style="display:none;margin-top:6px;">
+        <input type="text" id="saf_newGroupName" placeholder="Guruh nomi" />
+        <select id="saf_newGroupCourse">
+          <option value="">Kurs tanlanmagan</option>
+          ${state.courses.map((c) => `<option value="${c.course}">${c.course}</option>`).join("")}
+        </select>
+        <button type="button" class="secondary" id="saf_newGroupSave" style="width:auto;">Guruh qo'shish</button>
+      </div>
+
+      <label style="margin-top:10px;">Teglar</label>
+      <select id="saf_tags" multiple size="3">
+        ${state.tags.map((t) => `<option value="${t.id}" ${selectedTagIds.includes(String(t.id)) ? "selected" : ""}>${t.name}</option>`).join("")}
+      </select>
+      <button type="button" class="mini-btn" id="saf_newTagToggle">+ Yangi teg</button>
+      <div id="saf_newTagBox" style="display:none;margin-top:6px;gap:6px;">
+        <input type="text" id="saf_newTagName" placeholder="Teg nomi" style="flex:1;" />
+        <button type="button" class="secondary" id="saf_newTagSave" style="width:auto;">Qo'shish</button>
+      </div>
+
+      <div class="modal-actions" style="margin-top:14px;">
+        ${isEdit ? `<button type="button" class="primary danger" id="saf_archiveBtn" style="width:auto;">${student.active ? "Arxivlash" : "Arxivdan chiqarish"}</button>` : ""}
+        <button type="button" class="secondary" id="saf_cancelBtn" style="width:auto;">Bekor qilish</button>
+        <button type="button" class="primary" id="saf_saveBtn" style="width:auto;">Saqlash</button>
+      </div>
+    </div>
+  `;
+
+  const groupSel = container.querySelector("#saf_group");
+  const tagsSel = container.querySelector("#saf_tags");
+  const phoneInput = container.querySelector("#saf_phone");
+  const phone2Input = container.querySelector("#saf_phone2");
+
+  phoneInput.addEventListener("input", () => { phoneInput.value = _formatUzPhone(phoneInput.value); });
+  phone2Input.addEventListener("input", () => { phone2Input.value = _formatUzPhone(phone2Input.value); });
+
+  const teacherSel = container.querySelector("#saf_teacher");
+
+  // Guruh tanlovi doim JORIY tanlangan o'qituvchining guruhlariga cheklanadi — guruh egasi
+  // bilan talabaning ro'yxat egasi mos kelmasligi (chalkashlik) oldini olish uchun.
+  function refreshGroupOptions(preserveId) {
+    const teacherId = teacherSel.value;
+    const own = state.groups.filter((g) => g.teacher_id === teacherId);
+    groupSel.innerHTML = `<option value="">Guruhsiz</option>` +
+      own.map((g) => `<option value="${g.id}" ${preserveId && String(preserveId) === String(g.id) ? "selected" : ""}>${g.name}${g.course ? " — " + g.course : ""}</option>`).join("");
+  }
+  refreshGroupOptions(currentGroupId);
+  teacherSel.addEventListener("change", () => refreshGroupOptions(null));
+
+  container.querySelector("#saf_newGroupToggle").addEventListener("click", () => {
+    if (!teacherSel.value) { showToast("Avval o'qituvchini tanlang", "error"); return; }
+    const b = container.querySelector("#saf_newGroupBox");
+    b.style.display = b.style.display === "none" ? "block" : "none";
+  });
+  container.querySelector("#saf_newGroupSave").addEventListener("click", async () => {
+    const name = container.querySelector("#saf_newGroupName").value.trim();
+    const teacher_id = teacherSel.value;
+    if (!name) { showToast("Guruh nomini kiriting", "error"); return; }
+    if (!teacher_id) { showToast("Avval o'qituvchini tanlang", "error"); return; }
+    try {
+      const course = container.querySelector("#saf_newGroupCourse").value || null;
+      const res = await api("/api/admin/groups", { method: "POST", body: JSON.stringify({ name, course, teacher_id }) });
+      const teacherName = (state.teachers.find((t) => t.teacher_id === teacher_id) || {}).full_name || "";
+      state.groups.push({ id: res.id, name, course, teacher_id, teacher_name: teacherName });
+      refreshGroupOptions(res.id);
+      container.querySelector("#saf_newGroupName").value = "";
+      showToast("Guruh qo'shildi", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  });
+
+  container.querySelector("#saf_newTagToggle").addEventListener("click", () => {
+    const b = container.querySelector("#saf_newTagBox");
+    b.style.display = b.style.display === "none" ? "flex" : "none";
+  });
+  container.querySelector("#saf_newTagSave").addEventListener("click", async () => {
+    const name = container.querySelector("#saf_newTagName").value.trim();
+    if (!name) { showToast("Teg nomini kiriting", "error"); return; }
+    try {
+      const res = await api("/api/admin/tags", { method: "POST", body: JSON.stringify({ name }) });
+      state.tags.push({ id: res.id, name });
+      tagsSel.appendChild(el(`<option value="${res.id}" selected>${name}</option>`));
+      container.querySelector("#saf_newTagName").value = "";
+      showToast("Teg qo'shildi", "success");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  });
+
+  container.querySelector("#saf_cancelBtn").addEventListener("click", () => callbacks.onCancel());
+
+  if (isEdit) {
+    container.querySelector("#saf_archiveBtn").addEventListener("click", async () => {
+      try {
+        if (student.active) {
+          await api(`/api/admin/students/${student.id}`, { method: "DELETE" });
+        } else {
+          await api(`/api/admin/students/${student.id}/unarchive`, { method: "POST" });
+        }
+        showToast("Bajarildi", "success");
+        callbacks.onArchived();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+  }
+
+  container.querySelector("#saf_saveBtn").addEventListener("click", async () => {
+    const full_name = container.querySelector("#saf_full_name").value.trim();
+    if (!full_name) { showToast("FIO to'ldirilishi shart", "error"); return; }
+    const teacher_id = container.querySelector("#saf_teacher").value;
+    if (!teacher_id) { showToast("O'qituvchi tanlanishi shart", "error"); return; }
+    const groupVal = groupSel.value;
+    const payload = {
+      full_name,
+      teacher_id,
+      phone: _parseUzPhone(phoneInput.value),
+      phone2: _parseUzPhone(phone2Input.value),
+      parent_name: container.querySelector("#saf_parent_name").value.trim() || null,
+      course: container.querySelector("#saf_course").value.trim() || null,
+      status: container.querySelector("#saf_status").value,
+      group_id: groupVal ? Number(groupVal) : null,
+      tag_ids: [...tagsSel.selectedOptions].map((o) => Number(o.value)),
+    };
+    try {
+      if (isEdit) {
+        await api(`/api/admin/students/${student.id}`, { method: "PATCH", body: JSON.stringify(payload) });
+      } else {
+        await api("/api/admin/students", { method: "POST", body: JSON.stringify(payload) });
+      }
+      showToast("Saqlandi", "success");
+      callbacks.onSaved();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  });
 }
 
 // ============================================================

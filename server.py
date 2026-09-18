@@ -3392,6 +3392,202 @@ async def api_set_student_status(student_id: int, request: Request, x_telegram_i
     return {"ok": True}
 
 
+# ---------- API — ADMIN: TALABALAR (kompaniya darajasida, CEO/Direktor) ----------
+# Barcha o'qituvchilarning students/student_groups yozuvlarini birlashtirib ko'rsatadi,
+# teacher_id bo'yicha cheklovsiz. Faqat CEO/Direktor (require_owner).
+
+@app.get("/api/admin/students/summary")
+def api_admin_students_summary(x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    return db.students_summary()
+
+
+@app.get("/api/admin/students")
+def api_admin_list_students(
+    q: str = "", phone: str = "", parent_phone: str = "",
+    group_id: int = None, course: str = "", teacher_id: str = "",
+    tag_ids: str = "", status: str = "faol",
+    page: int = 1, page_size: int = 20,
+    x_telegram_init_data: str = Header(None),
+):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    tag_id_list = [int(t) for t in tag_ids.split(",") if t.strip().isdigit()]
+    filters = dict(
+        q=q or None, phone=phone or None, parent_phone=parent_phone or None,
+        group_id=group_id, course=course or None, teacher_id=teacher_id or None,
+        tag_ids=tag_id_list or None, status=status if status != "all" else None,
+    )
+    total = db.count_all_students(**filters)
+    items = db.list_all_students(limit=page_size, offset=(page - 1) * page_size, **filters)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@app.post("/api/admin/students")
+async def api_admin_add_student(request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    body = await request.json()
+
+    full_name = (body.get("full_name") or "").strip()
+    if not full_name:
+        raise HTTPException(status_code=400, detail="FIO to'ldirilishi shart")
+    teacher_id = (body.get("teacher_id") or "").strip()
+    if not teacher_id or not db.get_employee(teacher_id):
+        raise HTTPException(status_code=400, detail="O'qituvchi tanlanishi shart")
+
+    student_id = db.add_student(
+        teacher_id=teacher_id,
+        full_name=full_name,
+        parent_name=body.get("parent_name"),
+        phone=body.get("phone"),
+        phone2=body.get("phone2"),
+        course=body.get("course"),
+    )
+    if body.get("status"):
+        db.update_student(student_id, status=body["status"])
+    if body.get("group_id"):
+        db.set_student_group(student_id, body["group_id"])
+    if body.get("tag_ids"):
+        db.set_student_tags(student_id, body["tag_ids"])
+    return {"ok": True, "id": student_id}
+
+
+@app.get("/api/admin/students/{student_id}")
+def api_admin_get_student(student_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    row = db.get_student(student_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Talaba topilmadi")
+    d = dict(row)
+    group = db.get_group(d["group_id"]) if d["group_id"] else None
+    d["group_name"] = group["name"] if group else None
+    d["tags"] = [dict(t) for t in db.get_student_tags(student_id)]
+    return d
+
+
+@app.patch("/api/admin/students/{student_id}")
+async def api_admin_update_student(student_id: int, request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    row = db.get_student(student_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Talaba topilmadi")
+
+    body = await request.json()
+    full_name = body.get("full_name")
+    if full_name is not None and not full_name.strip():
+        raise HTTPException(status_code=400, detail="FIO to'ldirilishi shart")
+    status = body.get("status")
+    if status is not None and status not in ("faol", "qarzdor", "sinov", "muzlatilgan"):
+        raise HTTPException(status_code=400, detail="Noto'g'ri holat qiymati")
+
+    if body.get("teacher_id") and body["teacher_id"] != row["teacher_id"]:
+        if not db.get_employee(body["teacher_id"]):
+            raise HTTPException(status_code=400, detail="O'qituvchi topilmadi")
+        db.reassign_student_teacher(student_id, body["teacher_id"])
+
+    db.update_student(
+        student_id,
+        full_name=full_name.strip() if full_name is not None else None,
+        parent_name=body.get("parent_name"),
+        phone=body.get("phone"),
+        phone2=body.get("phone2"),
+        course=body.get("course"),
+        status=status,
+    )
+    if "group_id" in body:
+        db.set_student_group(student_id, body.get("group_id"))
+    if "tag_ids" in body:
+        db.set_student_tags(student_id, body.get("tag_ids") or [])
+    return {"ok": True}
+
+
+@app.delete("/api/admin/students/{student_id}")
+def api_admin_archive_student(student_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    row = db.get_student(student_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Talaba topilmadi")
+    db.deactivate_student(student_id)
+    return {"ok": True}
+
+
+@app.post("/api/admin/students/{student_id}/unarchive")
+def api_admin_unarchive_student(student_id: int, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    row = db.get_student(student_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Talaba topilmadi")
+    db.reactivate_student(student_id)
+    return {"ok": True}
+
+
+@app.get("/api/admin/groups")
+def api_admin_list_groups(x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    return [dict(r) for r in db.list_all_groups()]
+
+
+@app.post("/api/admin/groups")
+async def api_admin_add_group(request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Guruh nomi to'ldirilishi shart")
+    teacher_id = (body.get("teacher_id") or "").strip()
+    if not teacher_id or not db.get_employee(teacher_id):
+        raise HTTPException(status_code=400, detail="O'qituvchi tanlanishi shart")
+    group_id = db.add_group(teacher_id=teacher_id, name=name, course=body.get("course"))
+    return {"ok": True, "id": group_id}
+
+
+@app.get("/api/admin/courses")
+def api_admin_courses(x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    return [dict(r) for r in db.list_all_courses()]
+
+
+@app.get("/api/admin/teachers")
+def api_admin_teachers(x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    return [
+        {"teacher_id": r["teacher_id"], "full_name": r["full_name"], "role": r["role"]}
+        for r in db.list_teachers_for_filter()
+    ]
+
+
+@app.get("/api/admin/tags")
+def api_admin_tags(x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    return [dict(r) for r in db.list_tags()]
+
+
+@app.post("/api/admin/tags")
+async def api_admin_add_tag(request: Request, x_telegram_init_data: str = Header(None)):
+    emp = get_current_employee(x_telegram_init_data)
+    require_owner(emp)
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Teg nomi to'ldirilishi shart")
+    tag_id = db.add_tag(name)
+    return {"ok": True, "id": tag_id}
+
+
 @app.get("/api/my-groups")
 def api_my_groups(x_telegram_init_data: str = Header(None)):
     """O'qituvchining o'ziga tegishli guruhlar ro'yxati."""

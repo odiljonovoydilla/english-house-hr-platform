@@ -781,6 +781,12 @@ def init_db():
     _add_column_if_missing("tasks", "student_group", "TEXT")
     _add_column_if_missing("tasks", "student_phone", "TEXT")
     _add_column_if_missing("tasks", "student_problem_status", "TEXT")
+    # Avtomatik topshiriqlar uchun: kim yaratgan (masalan "lcup-bot") va dublikatni
+    # aniqlash kaliti. Eski topshiriqlarda NULL qoladi. Indeks UNIQUE emas — butun rolga
+    # yuborilgan topshiriq har bir xodimga alohida nusxa bo'lib, bir xil kalitni oladi.
+    _add_column_if_missing("tasks", "source", "TEXT")
+    _add_column_if_missing("tasks", "source_key", "TEXT")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_source_key ON tasks(source_key)")
 
 
     _add_column_if_missing("company_metrics", "repeat_sales_calls", "INTEGER")
@@ -1949,7 +1955,8 @@ def set_task_role_penalty(role: str, amount: float):
 
 
 def _insert_one_task(from_teacher_id, to_teacher_id, to_role, text, urgent, deadline, category,
-                      student_name, student_group, student_phone, student_problem_status, created_at):
+                      student_name, student_group, student_phone, student_problem_status, created_at,
+                      source=None, source_key=None):
     today = created_at[:10]
     count_today = _conn.execute(
         "SELECT COUNT(*) AS c FROM tasks WHERE date(created_at)=?", (today,)
@@ -1959,10 +1966,11 @@ def _insert_one_task(from_teacher_id, to_teacher_id, to_role, text, urgent, dead
     _conn.execute("""
         INSERT INTO tasks (from_teacher_id, to_teacher_id, to_role, text, urgent, deadline, category,
                             daily_number, student_name, student_group, student_phone, student_problem_status,
-                            status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+                            status, created_at, source, source_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?)
     """, (from_teacher_id, to_teacher_id, to_role, text, 1 if urgent else 0, deadline, category,
-          daily_number, student_name, student_group, student_phone, student_problem_status, created_at))
+          daily_number, student_name, student_group, student_phone, student_problem_status, created_at,
+          source, source_key))
     _conn.commit()
     return _conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
 
@@ -1970,7 +1978,8 @@ def _insert_one_task(from_teacher_id, to_teacher_id, to_role, text, urgent, dead
 def create_task(from_teacher_id: str, text: str, to_teacher_id: str = None, to_role: str = None,
                  urgent: bool = False, deadline: str = None, category: str = None,
                  student_name: str = None, student_group: str = None,
-                 student_phone: str = None, student_problem_status: str = None):
+                 student_phone: str = None, student_problem_status: str = None,
+                 source: str = None, source_key: str = None):
     """
     Aniq xodimga yuborilsa — bitta yozuv.
 
@@ -1989,7 +1998,7 @@ def create_task(from_teacher_id: str, text: str, to_teacher_id: str = None, to_r
         from_teacher_id=from_teacher_id, text=text, urgent=urgent, deadline=deadline,
         category=category, student_name=student_name, student_group=student_group,
         student_phone=student_phone, student_problem_status=student_problem_status,
-        created_at=now,
+        created_at=now, source=source, source_key=source_key,
     )
 
     if to_role and not to_teacher_id:
@@ -2023,10 +2032,14 @@ def list_tasks_sent(teacher_id: str):
     ).fetchall()
 
 
-def list_tasks_all(limit: int = 200):
-    return _conn.execute(
-        "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
-    ).fetchall()
+def list_tasks_all(limit: int = 200, offset: int = 0, source_key: str = None):
+    sql, params = "SELECT * FROM tasks", []
+    if source_key is not None:
+        sql += " WHERE source_key=?"
+        params.append(source_key)
+    sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    return _conn.execute(sql, params).fetchall()
 
 
 def list_tasks_in_range(start: str, end: str):

@@ -26,7 +26,7 @@ from datetime import date, datetime
 from urllib.parse import parse_qsl
 
 import httpx
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, Request, HTTPException, Header, Query
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
@@ -2847,8 +2847,13 @@ async def api_create_task(
     x_telegram_init_data: str = Header(None),
     authorization: str = Header(None),
 ):
-    emp, _is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
+    emp, is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
     body = await request.json()
+
+    # source / source_key — faqat SERVICE_API_KEY bilan kelgan (avtomatik) so'rovlar uchun;
+    # oddiy foydalanuvchi yuborsa e'tiborga olinmaydi.
+    source = (str(body.get("source") or "").strip() or None) if is_service else None
+    source_key = (str(body.get("source_key") or "").strip() or None) if is_service else None
 
     text = (body.get("text") or "").strip()
     to_teacher_id = body.get("to_teacher_id")
@@ -2872,6 +2877,7 @@ async def api_create_task(
         student_group=body.get("student_group") or None,
         student_phone=body.get("student_phone") or None,
         student_problem_status=body.get("student_problem_status") or None,
+        source=source, source_key=source_key,
     )
     if not task_ids:
         raise HTTPException(status_code=400, detail="Tanlangan rolda faol xodim topilmadi")
@@ -3013,11 +3019,17 @@ def api_tasks_sent(x_telegram_init_data: str = Header(None)):
 
 
 @app.get("/api/tasks/all")
-def api_tasks_all(x_telegram_init_data: str = Header(None), authorization: str = Header(None)):
+def api_tasks_all(
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    source_key: str = None,
+    x_telegram_init_data: str = Header(None),
+    authorization: str = Header(None),
+):
     emp, is_service = get_current_employee_or_service(x_telegram_init_data, authorization)
     if not is_service:
         require_owner(emp)
-    rows = db.list_tasks_all()
+    rows = db.list_tasks_all(limit=limit, offset=offset, source_key=source_key)
     cat_labels = _task_category_labels_map()
     penalties = db.get_task_role_penalties()
     return [_task_to_dict(r, cat_labels, penalties) for r in rows]
